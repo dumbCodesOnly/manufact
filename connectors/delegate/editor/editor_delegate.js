@@ -58,6 +58,7 @@ import {
   EDITOR_MAX_WRITES_PER_FILE,
   EDITOR_MAX_VALIDATE_CALLS,
 } from "../../../config.js";
+import { appendTask } from "../shared/preamble.js";
 
 // Same reasoning as connectors/delegate/agent/agent_delegate.js's
 // isTransientGeminiError / designer_delegate.js's copy of it: only 429
@@ -67,7 +68,7 @@ function isTransientGeminiError(err) {
   return err?.status === 429 || err?.status === 503 || err?.transient === true;
 }
 
-function buildSystemPreamble({ owner, repo, branch, task }) {
+function buildSystemPreamble({ owner, repo, branch }) {
   return (
     "You are a general-purpose repo-editing agent working inside ONE fixed repository and branch. " +
     "Some paths are hard-denied regardless of extension (e.g. CI workflow files, auth-adjacent code); a " +
@@ -95,8 +96,7 @@ function buildSystemPreamble({ owner, repo, branch, task }) {
     "there's no penalty for reading thoroughly first.\n\n" +
     "When the task is fully done, respond with a final plain-text summary of what you changed. If you hit " +
     "a genuine blocker (a missing file, an unresolvable conflict, a policy rejection you can't work around), " +
-    "explain exactly what stopped you instead of guessing.\n\n" +
-    `Task: ${task}`
+    "explain exactly what stopped you instead of guessing."
   );
 }
 
@@ -343,7 +343,7 @@ export async function runEditorAgent({ owner, repo, branch, task, max_steps = ED
     await assertNotDefaultBranch(owner, repo, branch);
 
     runId = randomUUID();
-    contents = [{ role: "user", parts: [{ text: buildSystemPreamble({ owner, repo, branch, task }) }] }];
+    contents = [{ role: "user", parts: [{ text: appendTask(buildSystemPreamble({ owner, repo, branch }), task) }] }];
     transcript = [];
     startStep = 1;
     writtenFiles = [];
@@ -670,7 +670,7 @@ export async function seedEditorRun({ owner, repo, branch, task, max_steps = EDI
   await assertNotDefaultBranch(owner, repo, branch);
 
   const runId = randomUUID();
-  const contents = [{ role: "user", parts: [{ text: buildSystemPreamble({ owner, repo, branch, task }) }] }];
+  const contents = [{ role: "user", parts: [{ text: appendTask(buildSystemPreamble({ owner, repo, branch }), task) }] }];
   // Seeds the run's TRUE overall step ceiling (see runEditorAgent's
   // effectiveOverallMaxSteps for the full rationale) -- this is what lets
   // the editor worker's later singleStep resumes know when they've reached
