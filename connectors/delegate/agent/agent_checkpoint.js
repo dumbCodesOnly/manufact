@@ -74,7 +74,7 @@ function resultCacheKey(runId, signature) {
 //     here -- a caller-supplied value could be stale by the time the actual
 //     Redis write lands, defeating the freshness check.
 // Fails open -- never throws.
-export async function saveCheckpoint(runId, { newContents = [], transcript, stepsDone, task, repeatCounts, consecutiveAllRepeatSteps, preCompactionResults, resultCache, provider, model, maxOutputTokens, pendingVerification, structuralRecheckUsed, overallMaxSteps, status = "running", finalAnswer, stepStartedAt }) {
+export async function saveCheckpoint(runId, { newContents = [], transcript, stepsDone, task, repeatCounts, consecutiveAllRepeatSteps, preCompactionResults, resultCache, provider, model, maxOutputTokens, preambleVariant, pendingVerification, structuralRecheckUsed, overallMaxSteps, status = "running", finalAnswer, stepStartedAt }) {
   const client = getRedis();
   if (!client) return;
   try {
@@ -124,7 +124,7 @@ export async function saveCheckpoint(runId, { newContents = [], transcript, step
       : (resultCache instanceof Map
           ? [...resultCache.keys()]
           : Object.keys(resultCache || {}));
-    const meta = JSON.stringify({ transcript, stepsDone, task, repeatCounts, consecutiveAllRepeatSteps, preCompactionResultIds, resultCacheIds, provider, model, maxOutputTokens, pendingVerification, structuralRecheckUsed, overallMaxSteps, status, finalAnswer, stepStartedAt: stepStartedAt ?? null, lastStepAt: Date.now() });
+    const meta = JSON.stringify({ transcript, stepsDone, task, repeatCounts, consecutiveAllRepeatSteps, preCompactionResultIds, resultCacheIds, provider, model, maxOutputTokens, preambleVariant, pendingVerification, structuralRecheckUsed, overallMaxSteps, status, finalAnswer, stepStartedAt: stepStartedAt ?? null, lastStepAt: Date.now() });
     ops.push(client.set(metaKey(runId), meta, { ex: CHECKPOINT_TTL_SECONDS }));
     await Promise.all(ops);
   } catch {
