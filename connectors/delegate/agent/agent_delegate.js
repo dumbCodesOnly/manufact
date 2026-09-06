@@ -1327,8 +1327,54 @@ const BAI_PREAMBLE_ADDENDUM =
   "final turn. When that happens, answer immediately in plain text -- do not describe what you would " +
   "fetch or do next, since there will be nothing left to fetch.";
 
-function buildSystemPreamble(provider) {
-  return provider === "bai" ? SYSTEM_PREAMBLE + BAI_PREAMBLE_ADDENDUM : SYSTEM_PREAMBLE;
+// Trimmed variant (A/B test, see the handoff for this work): cuts 3 of the
+// 6 SYSTEM_PREAMBLE paragraphs -- cross-check-sources, re-scan-before-
+// verdict, and full/direct-read-outranks-narrower -- keeping only the core
+// framing, the no-visible-reasoning rule, and the scope-bleed rule. The
+// rationale for the cut is that those 3 paragraphs' guidance is arguably
+// duplicated by VERIFICATION_PROMPT's forced second pass (below) plus the
+// mechanical checks (extractMechanicalClaims/lineIsVerbatimInToolResults),
+// which grep raw tool output rather than trusting prose self-policing.
+// Open risk: if VERIFICATION_PROMPT doesn't fully substitute for always-on
+// synthesis-time framing, or if that pass ever gets skipped (stuck-loop
+// force, certain resumes), this variant could have no backstop for what
+// those 3 paragraphs were preventing -- exactly what the A/B test below is
+// meant to surface with real data instead of guessing.
+const SYSTEM_PREAMBLE_TRIMMED =
+  "You are a read-only investigation agent. Use the available functions to gather whatever " +
+  "information you need to answer the task fully, calling as many as necessary across multiple " +
+  "turns. When you have enough information, respond with a final plain-text answer and no further " +
+  "function calls. Be specific and cite what you found (file paths, commit SHAs, log entries, page " +
+  "titles) rather than speculating.\n\n" +
+  "IMPORTANT -- no visible reasoning outside the answer itself: do not narrate your reasoning, plans, " +
+  "or step-by-step thinking in the visible text of any turn -- neither alongside a function call nor " +
+  "as a preamble before your final answer. Only write down the function call itself or the concluding " +
+  "answer.\n\n" +
+  "IMPORTANT -- respect scope, don't let same-named symbols bleed across files: when a question is " +
+  "about whether something is used, referenced, or defined WITHIN A SPECIFIC FILE OR SCOPE, only " +
+  "evidence found in THAT exact file or scope counts. A same-named function/variable used elsewhere " +
+  "in the repo does NOT mean it's used in the file the question is about. Before calling a usage " +
+  "claim a 'false positive' or asserting something IS used, quote the exact call site inside the " +
+  "specific scope in question. If you can't produce that quote, say plainly that no such usage was " +
+  "found there.";
+
+// preambleVariant selects which base preamble a run uses -- "verbose"
+// (SYSTEM_PREAMBLE, the existing default) or "trimmed"
+// (SYSTEM_PREAMBLE_TRIMMED). This is an A/B test knob threaded through
+// runInvestigation and, as of this change, also exposed on the MCP-facing
+// delegate_agent tool's Zod schema (agent_tools.js) so the calling model
+// can run the same task under both variants side-by-side for comparison.
+// NOTE: this is a deliberate departure from the original A/B test plan,
+// which called for keeping this OUT of the calling model's control
+// (human/test-harness-only) specifically to avoid confounding results --
+// if the model picks the variant per task, differences in outcome can
+// reflect which tasks got which variant rather than the preamble itself.
+// Revisit before treating any comparison done this way as a rigorous
+// result; tighten back to harness-only once exploratory testing is done.
+// Defaults to "verbose" so every existing caller is unaffected.
+function buildSystemPreamble(provider, preambleVariant = "verbose") {
+  const base = preambleVariant === "trimmed" ? SYSTEM_PREAMBLE_TRIMMED : SYSTEM_PREAMBLE;
+  return provider === "bai" ? base + BAI_PREAMBLE_ADDENDUM : base;
 }
 
 // Mechanical-claim extraction (2026-08-27, fix for the confident-wrong-
@@ -1569,7 +1615,7 @@ const VERIFICATION_PROMPT =
 // (see checkpoint.js) -- if it's unavailable, resumption just isn't
 // possible, same as before this existed; a failure still returns whatever
 // transcript was gathered in-memory this call.
-export async function runInvestigation({ task, max_steps = 20, resume_run_id, provider, model, maxOutputTokens, singleStep = false }) {
+export async function runInvestigation({ task, max_steps = 20, resume_run_id, provider, model, maxOutputTokens, singleStep = false, preambleVariant = "verbose" }) {
   // The provider actually in effect for this run -- the caller-supplied one
   // on a fresh run, or the one restored from a resumed checkpoint (see
   // `checkpoint.provider || provider` below). A checkpointed `contents`
@@ -1582,6 +1628,14 @@ export async function runInvestigation({ task, max_steps = 20, resume_run_id, pr
   // through every providerChat/saveCheckpoint call below exactly like
   // effectiveTask is.
   let effectiveProvider = provider;
+  // Same reasoning as effectiveProvider: which preamble variant a run uses
+  // is fixed at run start (fresh or seeded) and must not silently change on
+  // a resume just because a later caller passed a different value -- a run
+  // resumed mid-conversation under a DIFFERENT preamble than the one its
+  // earlier turns were built with would be an inconsistent conversation,
+  // not just a preference mismatch. Threaded through saveCheckpoint below
+  // exactly like effectiveProvider/effectiveTask.
+  let effectivePreambleVariant = preambleVariant;
   // Same reasoning as effectiveProvider directly above: a caller-supplied
   // model on a fresh run, or the one restored from a resumed checkpoint so
   // a resume can't silently switch models mid-conversation. Undefined is a
@@ -1723,6 +1777,11 @@ export async function runInvestigation({ task, max_steps = 20, resume_run_id, pr
     effectiveProvider = checkpoint.provider || provider;
     effectiveModel = checkpoint.model || model;
     effectiveMaxOutputTokens = checkpoint.maxOutputTokens || maxOutputTokens;
+    // Checkpoints saved before this field existed won't have it -- fall
+    // back to whatever the caller passed (may be undefined, treated as
+    // "verbose" by buildSystemPreamble's own default) rather than erroring,
+    // same defensive pattern as every other field restored here.
+    effectivePreambleVariant = checkpoint.preambleVariant || preambleVariant;
     // Maps aren't JSON-serializable, so saveCheckpoint stores repeatCounts
     // as a plain object and this reconstructs the Map on load. Checkpoints
     // saved before fix #4 existed won't have this field -- fall back to an
@@ -1784,7 +1843,7 @@ export async function runInvestigation({ task, max_steps = 20, resume_run_id, pr
     // tool in tools.js already guards against a missing task on a
     // non-resumable call, so `task` is trustworthy here).
     runId = randomUUID();
-    contents = [{ role: "user", parts: [{ text: `${buildSystemPreamble(effectiveProvider)}\n\nTask: ${task}` }] }];
+    contents = [{ role: "user", parts: [{ text: `${buildSystemPreamble(effectiveProvider, effectivePreambleVariant)}\n\nTask: ${task}` }] }];
     transcript = [];
     startStep = 1;
   }
@@ -1909,6 +1968,7 @@ export async function runInvestigation({ task, max_steps = 20, resume_run_id, pr
         provider: effectiveProvider,
         model: effectiveModel,
         maxOutputTokens: effectiveMaxOutputTokens,
+        preambleVariant: effectivePreambleVariant,
         pendingVerification,
         overallMaxSteps: effectiveOverallMaxSteps,
       });
@@ -2012,6 +2072,7 @@ export async function runInvestigation({ task, max_steps = 20, resume_run_id, pr
           provider: effectiveProvider,
           model: effectiveModel,
           maxOutputTokens: effectiveMaxOutputTokens,
+          preambleVariant: effectivePreambleVariant,
           pendingVerification,
           structuralRecheckUsed,
           overallMaxSteps: effectiveOverallMaxSteps,
@@ -2058,6 +2119,7 @@ export async function runInvestigation({ task, max_steps = 20, resume_run_id, pr
             provider: effectiveProvider,
             model: effectiveModel,
             maxOutputTokens: effectiveMaxOutputTokens,
+            preambleVariant: effectivePreambleVariant,
             pendingVerification,
             structuralRecheckUsed,
             overallMaxSteps: effectiveOverallMaxSteps,
@@ -2094,6 +2156,7 @@ export async function runInvestigation({ task, max_steps = 20, resume_run_id, pr
           provider: effectiveProvider,
           model: effectiveModel,
           maxOutputTokens: effectiveMaxOutputTokens,
+          preambleVariant: effectivePreambleVariant,
           pendingVerification,
           structuralRecheckUsed,
           overallMaxSteps: effectiveOverallMaxSteps,
@@ -2417,6 +2480,7 @@ export async function runInvestigation({ task, max_steps = 20, resume_run_id, pr
         provider: effectiveProvider,
         model: effectiveModel,
         maxOutputTokens: effectiveMaxOutputTokens,
+        preambleVariant: effectivePreambleVariant,
         pendingVerification,
         overallMaxSteps: effectiveOverallMaxSteps,
       });
@@ -2527,6 +2591,7 @@ export async function runInvestigation({ task, max_steps = 20, resume_run_id, pr
       provider: effectiveProvider,
       model: effectiveModel,
       maxOutputTokens: effectiveMaxOutputTokens,
+      preambleVariant: effectivePreambleVariant,
       // Always false here in practice: this checkpoint fires only after a
       // step that made function calls, and a verification-pass turn never
       // reaches this branch (withholdTools forces it to text-only, so it
@@ -2571,7 +2636,7 @@ export async function runInvestigation({ task, max_steps = 20, resume_run_id, pr
       repeatCounts: Object.fromEntries(repeatCounts), preCompactionResults: Object.fromEntries(preCompactionResults),
       resultCache: Object.fromEntries(resultCache),
       consecutiveAllRepeatSteps,
-      provider: effectiveProvider, model: effectiveModel, maxOutputTokens: effectiveMaxOutputTokens,
+      provider: effectiveProvider, model: effectiveModel, maxOutputTokens: effectiveMaxOutputTokens, preambleVariant: effectivePreambleVariant,
       pendingVerification, structuralRecheckUsed, overallMaxSteps: effectiveOverallMaxSteps, status: "done", finalAnswer: result.answer,
     });
     return result;
@@ -2604,9 +2669,9 @@ export async function runInvestigation({ task, max_steps = 20, resume_run_id, pr
 // restructuring that guard to cover a second, differently-shaped caller. A
 // small, explicit duplication of the ~4-line fresh-run setup here is lower-
 // risk than bending that guard's contract to serve both callers.
-export async function seedRun({ task, provider, model, maxOutputTokens, max_steps = 20 }) {
+export async function seedRun({ task, provider, model, maxOutputTokens, max_steps = 20, preambleVariant = "verbose" }) {
   const runId = randomUUID();
-  const contents = [{ role: "user", parts: [{ text: `${buildSystemPreamble(provider)}\n\nTask: ${task}` }] }];
+  const contents = [{ role: "user", parts: [{ text: `${buildSystemPreamble(provider, preambleVariant)}\n\nTask: ${task}` }] }];
   // Seeds the run's TRUE overall step ceiling (see runInvestigation's
   // effectiveOverallMaxSteps for the full rationale) -- this is what lets
   // the QStash worker's later singleStep resumes (agent_worker.js) know
@@ -2625,6 +2690,7 @@ export async function seedRun({ task, provider, model, maxOutputTokens, max_step
     provider,
     model,
     maxOutputTokens,
+    preambleVariant,
     pendingVerification: false,
     structuralRecheckUsed: false,
     overallMaxSteps,

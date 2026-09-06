@@ -31,8 +31,12 @@ export function register(server) {
       maxOutputTokens: z.number().optional()
         .describe(`Caps the per-turn (not whole-conversation) output token budget for each Gemini call in the investigation loop. Default: none set (Gemini's own API default applies, no cap sent). Raise this if answers are getting cut off mid-response. ` +
           `RESUME RULE: same as model -- if resume_run_id resolves to a checkpoint that recorded a value, that recorded value is always used and this argument is ignored. If the checkpoint has no recorded value, this argument is used as a fallback instead of erroring.`),
+      preambleVariant: z.enum(["verbose", "trimmed"]).optional()
+        .describe(`EXPLORATORY A/B TEST KNOB -- which system-preamble variant this run uses (default: "verbose", the existing full instruction set). "trimmed" cuts 3 of 6 paragraphs (cross-check-sources, re-scan-before-verdict, full/direct-read-outranks-narrower), keeping only core framing, no-visible-reasoning, and scope-bleed guidance. ` +
+          `Use to run the SAME task under both variants and compare outcomes side-by-side (e.g. whether the verification pass still catches what the cut paragraphs used to prevent). ` +
+          `RESUME RULE: same as model/maxOutputTokens -- if resume_run_id resolves to a checkpoint that recorded a variant, that recorded variant is always used and this argument is ignored, so a resumed run can't silently switch variants mid-conversation.`),
     },
-    async ({ task, max_steps: rawMaxSteps, log_to_notion = false, resume_run_id, show_transcript = false, provider, model, maxOutputTokens }) => {
+    async ({ task, max_steps: rawMaxSteps, log_to_notion = false, resume_run_id, show_transcript = false, provider, model, maxOutputTokens, preambleVariant }) => {
       // Distinct from the old `max_steps = 20` default-via-destructuring:
       // maxStepsProvided records whether the CALLER actually passed a value,
       // separately from the effective number used once defaulted -- the
@@ -96,7 +100,7 @@ export function register(server) {
         // this is the entire point of Scenario B.
         let runId;
         try {
-          runId = await seedRun({ task, provider, model, maxOutputTokens, max_steps });
+          runId = await seedRun({ task, provider, model, maxOutputTokens, max_steps, preambleVariant });
           await publishAgentStep({ runId, afterStep: 0 });
         } catch (err) {
           return { content: [{ type: "text", text: `Failed to start async investigation: ${err?.message ?? String(err)}` }], isError: true };
@@ -196,7 +200,7 @@ export function register(server) {
 
       let result;
       try {
-        result = await runInvestigation({ task, max_steps, resume_run_id, provider, model, maxOutputTokens });
+        result = await runInvestigation({ task, max_steps, resume_run_id, provider, model, maxOutputTokens, preambleVariant });
       } catch (err) {
         return { content: [{ type: "text", text: `Investigation failed: ${err?.message ?? String(err)}` }], isError: true };
       }
