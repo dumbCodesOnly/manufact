@@ -52,8 +52,6 @@ import { validateByExtension } from "../../github/editor_validate.js";
 import { saveCheckpoint, loadCheckpoint } from "./editor_checkpoint.js";
 import { isRedisConfigured } from "../../shared/cooldown.js";
 import {
-  EDITOR_ALLOWED_EXTENSIONS,
-  EDITOR_ALLOWED_PATH_PREFIXES,
   EDITOR_DEFAULT_STEPS,
   EDITOR_HARD_MAX_STEPS,
   EDITOR_MAX_FILES_PER_RUN,
@@ -69,20 +67,11 @@ function isTransientGeminiError(err) {
   return err?.status === 429 || err?.status === 503 || err?.transient === true;
 }
 
-function scopeDescription() {
-  const extPart = `extensions: ${EDITOR_ALLOWED_EXTENSIONS.join(", ")}`;
-  const pathPart = EDITOR_ALLOWED_PATH_PREFIXES.length
-    ? `; restricted to paths under: ${EDITOR_ALLOWED_PATH_PREFIXES.join(", ")}`
-    : "; no additional path restriction beyond the deny list";
-  return `${extPart}${pathPart}`;
-}
-
 function buildSystemPreamble({ owner, repo, branch, task }) {
   return (
     "You are a general-purpose repo-editing agent working inside ONE fixed repository and branch. " +
-    `You may read and write files within this scope only (${scopeDescription()}) -- some paths are also ` +
-    "hard-denied regardless of extension (e.g. CI workflow files, auth-adjacent code); a denied write will " +
-    "come back as an error explaining why, not a silent skip.\n\n" +
+    "Some paths are hard-denied regardless of extension (e.g. CI workflow files, auth-adjacent code); a " +
+    "denied write will come back as an error explaining why, not a silent skip.\n\n" +
     `Repository: ${owner}/${repo}. Branch: ${branch} (already confirmed to not be the default branch).\n\n` +
     `This run may touch at most ${EDITOR_MAX_FILES_PER_RUN} distinct file(s), and write to any single file ` +
     `at most ${EDITOR_MAX_WRITES_PER_FILE} time(s) -- plan your edits accordingly rather than writing the ` +
@@ -102,11 +91,11 @@ function buildSystemPreamble({ owner, repo, branch, task }) {
     "write it. Not free of limits -- capped per file path, so don't call it more than genuinely useful; " +
     "a couple of passes per file is normal, looping it dozens of times is not. Some allowed extensions " +
     "(.md, .txt) have no syntax to check and will always report valid.\n\n" +
-    "Work iteratively: read what you need, make changes, validate before writing when it's cheap to do so, " +
-    "write, and confirm the result makes sense. This " +
-    "tool cannot open or merge pull requests -- a human reviews the branch afterward. When the task is " +
-    "fully done, respond with a final plain-text summary of what you changed (or didn't, and why) and no " +
-    "further function calls.\n\n" +
+    "Take as many steps as you need to fully read and understand the task before making any changes -- " +
+    "there's no penalty for reading thoroughly first.\n\n" +
+    "When the task is fully done, respond with a final plain-text summary of what you changed. If you hit " +
+    "a genuine blocker (a missing file, an unresolvable conflict, a policy rejection you can't work around), " +
+    "explain exactly what stopped you instead of guessing.\n\n" +
     `Task: ${task}`
   );
 }
@@ -598,6 +587,21 @@ export async function runEditorAgent({ owner, repo, branch, task, max_steps = ED
     if (consecutiveAllRepeatSteps === 2) {
       responseParts.push({
         text: "[SYSTEM NOTE: the last 2 steps consisted entirely of calls identical to ones already made this run. One more step like that and tools will be withheld to force a plain-text answer instead. If you're re-reading to double-check, that's fine once -- but if you're retrying the same write and getting the same result, stop and explain what's blocking it instead of repeating the call.]",
+      });
+    }
+
+    // Halfway-point nudge: fires exactly once, on the step that lands at
+    // the run's true halfway mark, and only if nothing has been written
+    // yet -- a budget-aware check-in rather than upfront pressure not to
+    // over-read (see buildSystemPreamble, which now explicitly permits
+    // reading as long as needed). Compared against effectiveOverallMaxSteps
+    // (the run's TRUE ceiling), not cappedSteps, for the same reason
+    // isFinalStep above does -- correct across a singleStep/async resume,
+    // where cappedSteps is only this call's own shrunk loop bound.
+    const halfwayPoint = Math.ceil(effectiveOverallMaxSteps / 2);
+    if (step === halfwayPoint && writtenFiles.length === 0) {
+      responseParts.push({
+        text: `[SYSTEM NOTE: you're ${halfwayPoint} step(s) into a ${effectiveOverallMaxSteps}-step budget and haven't written any files yet. If you've gathered enough context, start making the actual edits now -- you still have steps left, but not unlimited ones.]`,
       });
     }
 
