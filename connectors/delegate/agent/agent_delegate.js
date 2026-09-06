@@ -1663,7 +1663,7 @@ export async function runInvestigation({ task, max_steps = 20, resume_run_id, pr
     effectiveMaxOutputTokens = checkpoint.maxOutputTokens || maxOutputTokens;
     // Checkpoints saved before this field existed won't have it -- fall
     // back to whatever the caller passed (may be undefined, treated as
-    // "verbose" by buildSystemPreamble's own default) rather than erroring,
+    // "trimmed" by buildAgentPreamble's own default) rather than erroring,
     // same defensive pattern as every other field restored here.
     effectivePreambleVariant = checkpoint.preambleVariant || preambleVariant;
     // Maps aren't JSON-serializable, so saveCheckpoint stores repeatCounts
