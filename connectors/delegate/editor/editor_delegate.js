@@ -102,14 +102,11 @@ function buildSystemPreamble({ owner, repo, branch, task }) {
     "write it. Not free of limits -- capped per file path, so don't call it more than genuinely useful; " +
     "a couple of passes per file is normal, looping it dozens of times is not. Some allowed extensions " +
     "(.md, .txt) have no syntax to check and will always report valid.\n\n" +
-    "Work iteratively: read what you need, make changes, validate before writing when it's cheap to do so, " +
-    "write, and confirm the result makes sense. This " +
-    "tool cannot open or merge pull requests -- a human reviews the branch afterward. Only stop short of " +
-    "actually writing a change if you hit a genuine blocker (a missing file, an unresolvable conflict, a " +
-    "policy rejection you can't work around) -- having read enough to understand the task, or feeling that " +
-    "describing the change is clearer than making it, is NOT a blocker and is not a reason to stop early. " +
-    "When the task is fully done (or you've hit a real blocker), respond with a final plain-text summary of " +
-    "what you changed (or, if blocked, exactly what stopped you) and no further function calls.\n\n" +
+    "Take as many steps as you need to fully read and understand the task before making any changes -- " +
+    "there's no penalty for reading thoroughly first. This tool cannot open or merge pull requests -- a " +
+    "human reviews the branch afterward. When the task is fully done, respond with a final plain-text " +
+    "summary of what you changed. If you hit a genuine blocker (a missing file, an unresolvable conflict, " +
+    "a policy rejection you can't work around), explain exactly what stopped you instead of guessing.\n\n" +
     `Task: ${task}`
   );
 }
