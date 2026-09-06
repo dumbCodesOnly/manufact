@@ -181,7 +181,7 @@ const SYSTEM_PREAMBLE_TRIMMED =
   "specific scope in question. If you can't produce that quote, say plainly that no such usage was " +
   "found there.";
 
-export function buildAgentPreamble(provider, preambleVariant = "verbose") {
+export function buildAgentPreamble(provider, preambleVariant = "trimmed") {
   return selectPreambleVariant({
     base: SYSTEM_PREAMBLE,
     trimmed: SYSTEM_PREAMBLE_TRIMMED,
