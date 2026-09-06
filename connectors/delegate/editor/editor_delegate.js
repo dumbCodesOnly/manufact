@@ -103,10 +103,10 @@ function buildSystemPreamble({ owner, repo, branch, task }) {
     "a couple of passes per file is normal, looping it dozens of times is not. Some allowed extensions " +
     "(.md, .txt) have no syntax to check and will always report valid.\n\n" +
     "Take as many steps as you need to fully read and understand the task before making any changes -- " +
-    "there's no penalty for reading thoroughly first. This tool cannot open or merge pull requests -- a " +
-    "human reviews the branch afterward. When the task is fully done, respond with a final plain-text " +
-    "summary of what you changed. If you hit a genuine blocker (a missing file, an unresolvable conflict, " +
-    "a policy rejection you can't work around), explain exactly what stopped you instead of guessing.\n\n" +
+    "there's no penalty for reading thoroughly first.\n\n" +
+    "When the task is fully done, respond with a final plain-text summary of what you changed. If you hit " +
+    "a genuine blocker (a missing file, an unresolvable conflict, a policy rejection you can't work around), " +
+    "explain exactly what stopped you instead of guessing.\n\n" +
     `Task: ${task}`
   );
 }
