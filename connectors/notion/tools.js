@@ -376,7 +376,7 @@ export async function doUpdatePage({ page_id, title, append_content, archived, r
       const matches = blocks.filter((b) => notionBlockPlainText(b) === find);
       const trunc = (s) => s.slice(0, 60) + (s.length > 60 ? "…" : "");
       if (matches.length === 0) {
-        throw new Error(`Update aborted, nothing further written — "${trunc(find)}" was not found among this page's top-level blocks (first 100). It may be nested inside a toggle/column, or the page may have more than 100 blocks — re-check with notion_get_page.`);
+        throw new Error(`Update aborted, nothing written — "${trunc(find)}" was not found among this page's top-level blocks (first 100). It may be nested inside a toggle/column, or the page may have more than 100 blocks — re-check with notion_get_page.`);
       }
       if (matches.length > 1) {
         throw new Error(`Update aborted, nothing further written — "${trunc(find)}" matches ${matches.length} blocks, but must be unique. Include more surrounding context in "find" to disambiguate.`);
