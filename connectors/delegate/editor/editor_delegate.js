@@ -52,8 +52,6 @@ import { validateByExtension } from "../../github/editor_validate.js";
 import { saveCheckpoint, loadCheckpoint } from "./editor_checkpoint.js";
 import { isRedisConfigured } from "../../shared/cooldown.js";
 import {
-  EDITOR_ALLOWED_EXTENSIONS,
-  EDITOR_ALLOWED_PATH_PREFIXES,
   EDITOR_DEFAULT_STEPS,
   EDITOR_HARD_MAX_STEPS,
   EDITOR_MAX_FILES_PER_RUN,
