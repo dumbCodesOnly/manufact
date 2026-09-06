@@ -1727,7 +1727,7 @@ export async function runInvestigation({ task, max_steps = 20, resume_run_id, pr
     // tool in tools.js already guards against a missing task on a
     // non-resumable call, so `task` is trustworthy here).
     runId = randomUUID();
-    contents = [{ role: "user", parts: [{ text: appendTask(buildSystemPreamble(effectiveProvider, effectivePreambleVariant), task) }] }];
+    contents = [{ role: "user", parts: [{ text: appendTask(buildAgentPreamble(effectiveProvider, effectivePreambleVariant), task) }] }];
     transcript = [];
     startStep = 1;
   }
