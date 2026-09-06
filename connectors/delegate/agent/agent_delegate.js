@@ -1499,7 +1499,7 @@ const VERIFICATION_PROMPT =
 // (see checkpoint.js) -- if it's unavailable, resumption just isn't
 // possible, same as before this existed; a failure still returns whatever
 // transcript was gathered in-memory this call.
-export async function runInvestigation({ task, max_steps = 20, resume_run_id, provider, model, maxOutputTokens, singleStep = false, preambleVariant = "verbose" }) {
+export async function runInvestigation({ task, max_steps = 20, resume_run_id, provider, model, maxOutputTokens, singleStep = false, preambleVariant = "trimmed" }) {
   // The provider actually in effect for this run -- the caller-supplied one
   // on a fresh run, or the one restored from a resumed checkpoint (see
   // `checkpoint.provider || provider` below). A checkpointed `contents`
@@ -2553,7 +2553,7 @@ export async function runInvestigation({ task, max_steps = 20, resume_run_id, pr
 // restructuring that guard to cover a second, differently-shaped caller. A
 // small, explicit duplication of the ~4-line fresh-run setup here is lower-
 // risk than bending that guard's contract to serve both callers.
-export async function seedRun({ task, provider, model, maxOutputTokens, max_steps = 20, preambleVariant = "verbose" }) {
+export async function seedRun({ task, provider, model, maxOutputTokens, max_steps = 20, preambleVariant = "trimmed" }) {
   const runId = randomUUID();
   const contents = [{ role: "user", parts: [{ text: appendTask(buildAgentPreamble(provider, preambleVariant), task) }] }];
   // Seeds the run's TRUE overall step ceiling (see runInvestigation's
