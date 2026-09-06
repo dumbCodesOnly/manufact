@@ -2555,7 +2555,7 @@ export async function runInvestigation({ task, max_steps = 20, resume_run_id, pr
 // risk than bending that guard's contract to serve both callers.
 export async function seedRun({ task, provider, model, maxOutputTokens, max_steps = 20, preambleVariant = "verbose" }) {
   const runId = randomUUID();
-  const contents = [{ role: "user", parts: [{ text: `${buildSystemPreamble(provider, preambleVariant)}\n\nTask: ${task}` }] }];
+  const contents = [{ role: "user", parts: [{ text: appendTask(buildAgentPreamble(provider, preambleVariant), task) }] }];
   // Seeds the run's TRUE overall step ceiling (see runInvestigation's
   // effectiveOverallMaxSteps for the full rationale) -- this is what lets
   // the QStash worker's later singleStep resumes (agent_worker.js) know
