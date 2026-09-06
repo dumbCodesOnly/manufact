@@ -41,6 +41,7 @@ import {
   FRONTEND_HARD_MAX_STEPS,
   FRONTEND_MAX_VALIDATE_CALLS,
 } from "../../../config.js";
+import { appendTask, buildDesignerPreamble } from "../shared/preamble.js";
 
 // Same reasoning as the agent loop's isTransientGeminiError:
 // only 429 (rate limit) and 503 (overloaded) are worth resuming past --
@@ -50,30 +51,10 @@ function isTransientGeminiError(err) {
   return err?.status === 429 || err?.status === 503 || err?.transient === true;
 }
 
-function buildSystemPreamble({ owner, repo, branch, task }) {
-  return (
-    "You are a frontend/UI design agent working inside ONE fixed repository and branch. You may " +
-    `read and write files with these extensions only: ${FRONTEND_ALLOWED_EXTENSIONS.join(", ")}. ` +
-    `Repository: ${owner}/${repo}. Branch: ${branch} (already confirmed to not be the default branch).\n\n` +
-    "You have three tools:\n" +
-    "- read_file(path): reads a file's current content on this branch, together with its blob sha. " +
-    "Always read a file before patching it -- write_file's patch mode requires the exact sha the " +
-    "content was read from.\n" +
-    "- write_file(path, content OR patch, base_sha, message): writes a file. Give `content` for a full " +
-    "overwrite, or `patch` (a list of {find, replace} operations, each `find` must appear exactly once) " +
-    "to edit part of a file you already read. `base_sha` is required for patch mode, and required for " +
-    "content mode too whenever you are replacing a file you already read (omit it only when creating a " +
-    "brand-new file that doesn't exist yet). If a write is rejected as a conflict, the file changed " +
-    "since you read it -- re-read it and retry, don't assume your version is still current.\n" +
-    "- validate(path, content): syntax-checks content against its file type before you write it. Not " +
-    "free of limits -- capped per file, so don't call it more than genuinely useful; a couple of passes " +
-    "per file is normal, looping it dozens of times is not.\n\n" +
-    "Work iteratively: read what you need, make changes, validate before writing when it's cheap to do " +
-    "so, write, and confirm the result makes sense. When the task is fully done, respond with a final " +
-    "plain-text summary of what you changed and no further function calls.\n\n" +
-    `Task: ${task}`
-  );
-}
+// buildSystemPreamble's actual text now lives in ../shared/preamble.js as
+// buildDesignerPreamble({ owner, repo, branch }) -- see that file's header
+// for why this was relocated (not unified with editor's own preamble)
+// there. Called directly at this file's own call site below.
 
 // Builds the three function declarations + their execute() closures for one
 // run. owner/repo/branch are captured here, NOT exposed as parameters the
@@ -251,7 +232,7 @@ export async function runDesignAgent({ owner, repo, branch, task, max_steps = FR
     }
 
     runId = randomUUID();
-    contents = [{ role: "user", parts: [{ text: buildSystemPreamble({ owner, repo, branch, task }) }] }];
+    contents = [{ role: "user", parts: [{ text: appendTask(buildDesignerPreamble({ owner, repo, branch }), task) }] }];
     transcript = [];
     startStep = 1;
     validateCounts = new Map();

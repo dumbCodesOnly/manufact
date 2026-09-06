@@ -58,6 +58,7 @@ import {
   EDITOR_MAX_WRITES_PER_FILE,
   EDITOR_MAX_VALIDATE_CALLS,
 } from "../../../config.js";
+import { appendTask, buildEditorPreamble } from "../shared/preamble.js";
 
 // Same reasoning as connectors/delegate/agent/agent_delegate.js's
 // isTransientGeminiError / designer_delegate.js's copy of it: only 429
@@ -67,38 +68,10 @@ function isTransientGeminiError(err) {
   return err?.status === 429 || err?.status === 503 || err?.transient === true;
 }
 
-function buildSystemPreamble({ owner, repo, branch, task }) {
-  return (
-    "You are a general-purpose repo-editing agent working inside ONE fixed repository and branch. " +
-    "Some paths are hard-denied regardless of extension (e.g. CI workflow files, auth-adjacent code); a " +
-    "denied write will come back as an error explaining why, not a silent skip.\n\n" +
-    `Repository: ${owner}/${repo}. Branch: ${branch} (already confirmed to not be the default branch).\n\n` +
-    `This run may touch at most ${EDITOR_MAX_FILES_PER_RUN} distinct file(s), and write to any single file ` +
-    `at most ${EDITOR_MAX_WRITES_PER_FILE} time(s) -- plan your edits accordingly rather than writing the ` +
-    "same file repeatedly to iterate toward a result.\n\n" +
-    "You have three tools:\n" +
-    "- read_file(path): reads a file's current content on this branch, together with its blob sha. Always " +
-    "read a file before patching it -- write_file's replacements mode benefits from an exact-match sha, " +
-    "and either write mode will be rejected as a conflict if the file changed since you last read it.\n" +
-    "- write_file(path, content OR replacements, base_sha, message): writes a file. Give `content` for a " +
-    "full overwrite (also how you create a brand-new file), or `replacements` (a list of {find, replace} " +
-    "operations, each `find` must appear exactly once in the current file) to edit part of a file you " +
-    "already read -- replacements mode requires the file to already exist. `base_sha` is optional but " +
-    "recommended once you've read a file: if given, the write is rejected as a conflict when it doesn't " +
-    "match the file's current sha, which means the file changed since you read it -- re-read and retry " +
-    "rather than assuming your version is still current.\n" +
-    "- validate(path, content): syntax-checks content against its file type (by extension) before you " +
-    "write it. Not free of limits -- capped per file path, so don't call it more than genuinely useful; " +
-    "a couple of passes per file is normal, looping it dozens of times is not. Some allowed extensions " +
-    "(.md, .txt) have no syntax to check and will always report valid.\n\n" +
-    "Take as many steps as you need to fully read and understand the task before making any changes -- " +
-    "there's no penalty for reading thoroughly first.\n\n" +
-    "When the task is fully done, respond with a final plain-text summary of what you changed. If you hit " +
-    "a genuine blocker (a missing file, an unresolvable conflict, a policy rejection you can't work around), " +
-    "explain exactly what stopped you instead of guessing.\n\n" +
-    `Task: ${task}`
-  );
-}
+// buildSystemPreamble's actual text now lives in ../shared/preamble.js as
+// buildEditorPreamble({ owner, repo, branch }) -- see that file's header
+// for why this was relocated (not unified with designer's own preamble)
+// there. Called directly at this file's own call sites below.
 
 // Builds the two function declarations + their execute() closures for one
 // run. owner/repo/branch are captured here, NOT exposed as parameters the
@@ -343,7 +316,7 @@ export async function runEditorAgent({ owner, repo, branch, task, max_steps = ED
     await assertNotDefaultBranch(owner, repo, branch);
 
     runId = randomUUID();
-    contents = [{ role: "user", parts: [{ text: buildSystemPreamble({ owner, repo, branch, task }) }] }];
+    contents = [{ role: "user", parts: [{ text: appendTask(buildEditorPreamble({ owner, repo, branch }), task) }] }];
     transcript = [];
     startStep = 1;
     writtenFiles = [];
@@ -670,7 +643,7 @@ export async function seedEditorRun({ owner, repo, branch, task, max_steps = EDI
   await assertNotDefaultBranch(owner, repo, branch);
 
   const runId = randomUUID();
-  const contents = [{ role: "user", parts: [{ text: buildSystemPreamble({ owner, repo, branch, task }) }] }];
+  const contents = [{ role: "user", parts: [{ text: appendTask(buildEditorPreamble({ owner, repo, branch }), task) }] }];
   // Seeds the run's TRUE overall step ceiling (see runEditorAgent's
   // effectiveOverallMaxSteps for the full rationale) -- this is what lets
   // the editor worker's later singleStep resumes know when they've reached

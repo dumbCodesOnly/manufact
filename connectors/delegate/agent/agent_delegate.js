@@ -53,6 +53,7 @@ import { mem0Request } from "../../mem/client.js";
 import { notionRequest, notionRichTextToString, notionPageTitle, notionDatabaseTitle, notionBlocksToText } from "../../notion/client.js";
 import { DEFAULT_OWNER } from "../../../config.js";
 import { getDelegateHooks } from "../provider_hooks.js";
+import { appendTask, buildAgentPreamble } from "../shared/preamble.js";
 
 const HARD_MAX_STEPS = 30;
 export const HISTORY_FULL_DETAIL_STEPS = 3;
@@ -1253,129 +1254,12 @@ const FUNCTION_NAME_SET = new Set(FUNCTIONS.map((f) => f.name));
 // has both capabilities available at once. Do NOT re-add web_fetch or a
 // google_search tool here -- add web capability to research_delegate.js instead.
 
-const SYSTEM_PREAMBLE =
-  "You are a read-only investigation agent. Use the available functions to gather whatever " +
-  "information you need to answer the task fully, calling as many as necessary across multiple " +
-  "turns. When you have enough information, respond with a final plain-text answer and no further " +
-  "function calls. Be specific and cite what you found (file paths, commit SHAs, log entries, page " +
-  "titles) rather than speculating.\n\n" +
-  "IMPORTANT -- no visible reasoning outside the answer itself: do not narrate your reasoning, plans, " +
-  "or step-by-step thinking in the visible text of any turn -- neither alongside a function call (just " +
-  "make the call, with no accompanying explanation of why) nor as a preamble before your final answer " +
-  "(lead with the answer itself, not a walkthrough of how you got there). Every turn's visible text is " +
-  "resent in full on every subsequent step for the rest of this investigation, so a reasoning preamble " +
-  "repeated turn after turn compounds into wasted tokens without adding anything a caller reading only " +
-  "the final answer needs. Think through the problem as needed, but only write down the function call " +
-  "itself or the concluding answer -- not the thinking that produced it.\n\n" +
-  "IMPORTANT -- cross-check, don't just aggregate: when the task touches more than one source " +
-  "(e.g. a GitHub PR's status vs. a Notion tracking page, or a repo file vs. what a database row " +
-  "claims), actively look for contradictions between them rather than reporting each source's claim " +
-  "in isolation. A thing that LOOKS current, open, or resolved in one source can be stale or wrong " +
-  "according to another -- if your task plan touches multiple sources for related claims, check them " +
-  "against each other before answering, and call out any discrepancy explicitly (including which " +
-  "source you consider more authoritative and why) rather than picking one silently.\n\n" +
-  "IMPORTANT -- respect scope, don't let same-named symbols bleed across files: when a question is " +
-  "about whether something is used, referenced, or defined WITHIN A SPECIFIC FILE OR SCOPE (e.g. an " +
-  "unused-import lint warning, which is always per-file), only evidence found in THAT exact file or " +
-  "scope counts. A same-named function/variable being called somewhere else in the repo -- even in a " +
-  "file that imports it from the same source module -- does NOT mean it's used in the file the question " +
-  "is actually about; each file's own import/declaration is independent. Before calling a usage claim a " +
-  "'false positive' or asserting something IS used, quote the exact call site (file + line/snippet) " +
-  "inside the specific scope in question. If you can't produce that quote from within the scope asked " +
-  "about, say plainly that no such usage was found there, rather than pointing to usage elsewhere as if " +
-  "it answered the question.\n\n" +
-  "IMPORTANT -- re-scan your OWN retrieved text before writing a verdict word (consistent, fixed, " +
-  "resolved, stale, up-to-date, matches, etc.): a long tool-use run compresses many turns of raw " +
-  "file/page content into one final summary, and that compression step is itself a separate inference " +
-  "that can pattern-match toward a comfortable verdict even when the contradicting text is sitting " +
-  "unused in your own transcript. If your task asks you to check whether something is stale, " +
-  "inconsistent, or still-accurate, before writing the verdict go back through EVERY piece of raw " +
-  "content you fetched (not just the ones that confirm your leaning) and check it against the specific " +
-  "claim in the question -- do not let a majority of confirming sources outvote a single contradicting " +
-  "one you already retrieved. If you find a contradiction this way, quote it and flag it explicitly " +
-  "even if most of what you found points the other way.\n\n" +
-  "IMPORTANT -- a full/direct read outranks a narrower or derived result for the SAME fact: when a " +
-  "complete, direct read of a file or page (github_read_file, github_get_file_at_commit, notion_get_page, " +
-  "etc.) and a narrower or derived result about the same thing (a github_search_code snippet, a grep hit, " +
-  "a mem0_search match) disagree, trust the full/direct read -- it is the more authoritative source, even " +
-  "if the narrower result was fetched more recently in this conversation. A search snippet only shows the " +
-  "matching line(s) out of context and can miss surrounding logic (a conditional, a comment, a different " +
-  "code path) that changes what the match actually means; a full read does not have that limitation. " +
-  "Do not let a later, narrower result override an earlier, complete one just because it came later.";
-
-// bai-specific early reinforcement (plan.md Section 24 follow-up): every note
-// version tried on the FINAL-STEP turn alone (elaborated / removed /
-// simplified-restored) has produced a different failure shape on bai --
-// most recently, the model narrating an intended tool action ("Fetching
-// those now...") on a turn where no tools exist at all, despite the
-// final-step note saying so explicitly. Hypothesis: by the time that note
-// arrives, it's competing against many turns of established tool-calling
-// momentum with nothing earlier in the conversation to counter it. This
-// adds one short, early mention -- in turn 1, before any such momentum
-// exists -- that a tool-less forced final turn is coming, so it isn't a
-// surprise sprung only at the moment tools are withdrawn.
-//
-// Kept deliberately short: per this same investigation, MORE elaboration
-// on the final-step note itself has correlated with new failure shapes,
-// not fewer (Sections 16/18/20/21), so this errs toward minimal wording
-// rather than a fuller explanation. Gemini-only runs have never exhibited
-// any of these failure shapes, so this addendum is bai-only -- see
-// buildSystemPreamble below -- to avoid changing a prompt surface that
-// isn't broken for the other provider.
-const BAI_PREAMBLE_ADDENDUM =
-  "\n\nNOTE: at some point before you must answer, tool access will be withdrawn for one forced " +
-  "final turn. When that happens, answer immediately in plain text -- do not describe what you would " +
-  "fetch or do next, since there will be nothing left to fetch.";
-
-// Trimmed variant (A/B test, see the handoff for this work): cuts 3 of the
-// 6 SYSTEM_PREAMBLE paragraphs -- cross-check-sources, re-scan-before-
-// verdict, and full/direct-read-outranks-narrower -- keeping only the core
-// framing, the no-visible-reasoning rule, and the scope-bleed rule. The
-// rationale for the cut is that those 3 paragraphs' guidance is arguably
-// duplicated by VERIFICATION_PROMPT's forced second pass (below) plus the
-// mechanical checks (extractMechanicalClaims/lineIsVerbatimInToolResults),
-// which grep raw tool output rather than trusting prose self-policing.
-// Open risk: if VERIFICATION_PROMPT doesn't fully substitute for always-on
-// synthesis-time framing, or if that pass ever gets skipped (stuck-loop
-// force, certain resumes), this variant could have no backstop for what
-// those 3 paragraphs were preventing -- exactly what the A/B test below is
-// meant to surface with real data instead of guessing.
-const SYSTEM_PREAMBLE_TRIMMED =
-  "You are a read-only investigation agent. Use the available functions to gather whatever " +
-  "information you need to answer the task fully, calling as many as necessary across multiple " +
-  "turns. When you have enough information, respond with a final plain-text answer and no further " +
-  "function calls. Be specific and cite what you found (file paths, commit SHAs, log entries, page " +
-  "titles) rather than speculating.\n\n" +
-  "IMPORTANT -- no visible reasoning outside the answer itself: do not narrate your reasoning, plans, " +
-  "or step-by-step thinking in the visible text of any turn -- neither alongside a function call nor " +
-  "as a preamble before your final answer. Only write down the function call itself or the concluding " +
-  "answer.\n\n" +
-  "IMPORTANT -- respect scope, don't let same-named symbols bleed across files: when a question is " +
-  "about whether something is used, referenced, or defined WITHIN A SPECIFIC FILE OR SCOPE, only " +
-  "evidence found in THAT exact file or scope counts. A same-named function/variable used elsewhere " +
-  "in the repo does NOT mean it's used in the file the question is about. Before calling a usage " +
-  "claim a 'false positive' or asserting something IS used, quote the exact call site inside the " +
-  "specific scope in question. If you can't produce that quote, say plainly that no such usage was " +
-  "found there.";
-
-// preambleVariant selects which base preamble a run uses -- "verbose"
-// (SYSTEM_PREAMBLE, the existing default) or "trimmed"
-// (SYSTEM_PREAMBLE_TRIMMED). This is an A/B test knob threaded through
-// runInvestigation and, as of this change, also exposed on the MCP-facing
-// delegate_agent tool's Zod schema (agent_tools.js) so the calling model
-// can run the same task under both variants side-by-side for comparison.
-// NOTE: this is a deliberate departure from the original A/B test plan,
-// which called for keeping this OUT of the calling model's control
-// (human/test-harness-only) specifically to avoid confounding results --
-// if the model picks the variant per task, differences in outcome can
-// reflect which tasks got which variant rather than the preamble itself.
-// Revisit before treating any comparison done this way as a rigorous
-// result; tighten back to harness-only once exploratory testing is done.
-// Defaults to "verbose" so every existing caller is unaffected.
-function buildSystemPreamble(provider, preambleVariant = "verbose") {
-  const base = preambleVariant === "trimmed" ? SYSTEM_PREAMBLE_TRIMMED : SYSTEM_PREAMBLE;
-  return provider === "bai" ? base + BAI_PREAMBLE_ADDENDUM : base;
-}
+// The actual preamble TEXT (verbose/trimmed bodies + the bai-only
+// addendum) and the preambleVariant A/B-test selection logic both now live
+// in ../shared/preamble.js as buildAgentPreamble(provider, preambleVariant)
+// -- see that file's header for why this was relocated (not unified) there
+// alongside buildEditorPreamble/buildDesignerPreamble. Called directly at
+// this file's own call site below rather than re-declared locally.
 
 // Mechanical-claim extraction (2026-08-27, fix for the confident-wrong-
 // constant failure mode found in live testing, runs 3-4: the model asserted `HARD_MAX_STEPS` gated a
@@ -1615,7 +1499,7 @@ const VERIFICATION_PROMPT =
 // (see checkpoint.js) -- if it's unavailable, resumption just isn't
 // possible, same as before this existed; a failure still returns whatever
 // transcript was gathered in-memory this call.
-export async function runInvestigation({ task, max_steps = 20, resume_run_id, provider, model, maxOutputTokens, singleStep = false, preambleVariant = "verbose" }) {
+export async function runInvestigation({ task, max_steps = 20, resume_run_id, provider, model, maxOutputTokens, singleStep = false, preambleVariant = "trimmed" }) {
   // The provider actually in effect for this run -- the caller-supplied one
   // on a fresh run, or the one restored from a resumed checkpoint (see
   // `checkpoint.provider || provider` below). A checkpointed `contents`
@@ -1779,7 +1663,7 @@ export async function runInvestigation({ task, max_steps = 20, resume_run_id, pr
     effectiveMaxOutputTokens = checkpoint.maxOutputTokens || maxOutputTokens;
     // Checkpoints saved before this field existed won't have it -- fall
     // back to whatever the caller passed (may be undefined, treated as
-    // "verbose" by buildSystemPreamble's own default) rather than erroring,
+    // "trimmed" by buildAgentPreamble's own default) rather than erroring,
     // same defensive pattern as every other field restored here.
     effectivePreambleVariant = checkpoint.preambleVariant || preambleVariant;
     // Maps aren't JSON-serializable, so saveCheckpoint stores repeatCounts
@@ -1843,7 +1727,7 @@ export async function runInvestigation({ task, max_steps = 20, resume_run_id, pr
     // tool in tools.js already guards against a missing task on a
     // non-resumable call, so `task` is trustworthy here).
     runId = randomUUID();
-    contents = [{ role: "user", parts: [{ text: `${buildSystemPreamble(effectiveProvider, effectivePreambleVariant)}\n\nTask: ${task}` }] }];
+    contents = [{ role: "user", parts: [{ text: appendTask(buildAgentPreamble(effectiveProvider, effectivePreambleVariant), task) }] }];
     transcript = [];
     startStep = 1;
   }
@@ -2669,9 +2553,9 @@ export async function runInvestigation({ task, max_steps = 20, resume_run_id, pr
 // restructuring that guard to cover a second, differently-shaped caller. A
 // small, explicit duplication of the ~4-line fresh-run setup here is lower-
 // risk than bending that guard's contract to serve both callers.
-export async function seedRun({ task, provider, model, maxOutputTokens, max_steps = 20, preambleVariant = "verbose" }) {
+export async function seedRun({ task, provider, model, maxOutputTokens, max_steps = 20, preambleVariant = "trimmed" }) {
   const runId = randomUUID();
-  const contents = [{ role: "user", parts: [{ text: `${buildSystemPreamble(provider, preambleVariant)}\n\nTask: ${task}` }] }];
+  const contents = [{ role: "user", parts: [{ text: appendTask(buildAgentPreamble(provider, preambleVariant), task) }] }];
   // Seeds the run's TRUE overall step ceiling (see runInvestigation's
   // effectiveOverallMaxSteps for the full rationale) -- this is what lets
   // the QStash worker's later singleStep resumes (agent_worker.js) know
