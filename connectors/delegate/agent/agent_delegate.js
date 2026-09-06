@@ -53,7 +53,7 @@ import { mem0Request } from "../../mem/client.js";
 import { notionRequest, notionRichTextToString, notionPageTitle, notionDatabaseTitle, notionBlocksToText } from "../../notion/client.js";
 import { DEFAULT_OWNER } from "../../../config.js";
 import { getDelegateHooks } from "../provider_hooks.js";
-import { selectPreambleVariant, appendTask } from "../shared/preamble.js";
+import { appendTask, buildAgentPreamble } from "../shared/preamble.js";
 
 const HARD_MAX_STEPS = 30;
 export const HISTORY_FULL_DETAIL_STEPS = 3;
