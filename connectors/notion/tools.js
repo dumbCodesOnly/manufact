@@ -598,7 +598,15 @@ export async function doCheckpoint({ action, notes, replacements, append_notes }
     const trunc = (s) => s.slice(0, 60) + (s.length > 60 ? "\u2026" : "");
 
     if (replacements?.length) {
-      for (const { find, replace } of replacements) {
+      // Validate ALL replacements against the pre-write snapshot before
+      // writing ANY of them (bug fix 2026-09-07 -- previously this loop
+      // validated and PATCHed each replacement in the same iteration, so a
+      // bad find later in the list threw AFTER earlier ones had already
+      // been written to Notion, even though the error claimed "nothing
+      // further written". That left checkpoints silently half-updated.
+      // Block IDs don't change across these edits, so it's safe to resolve
+      // every find against the same original innerBlocks snapshot up front.
+      const resolved = replacements.map(({ find, replace }) => {
         const matches = innerBlocks.filter((b) => notionBlockPlainText(b) === find);
         if (matches.length === 0) {
           throw new Error(`Update aborted, nothing further written \u2014 "${trunc(find)}" was not found among the checkpoint's current lines. Use checkpoint (action: "load") to see current content, or action: "save" for a full rewrite.`);
