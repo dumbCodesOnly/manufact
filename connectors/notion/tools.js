@@ -535,7 +535,7 @@ export async function replaceCheckpointRange({ page_id, contentLines, updated_at
 // client.js-only commit) instead of advancing to this commit -- this no-op
 // comment forces a new deployment so the alias promotion re-runs.)
 // ---------------------------------------------------------------------------
-export async function doCheckpoint({ action, notes }) {
+export async function doCheckpoint({ action, notes, replacements, append_notes }) {
   if (action === "save") {
     const existing = await findPageByEntityId("checkpoint-latest");
     const notesLines = (notes || "").split("\n");
@@ -574,8 +574,73 @@ export async function doCheckpoint({ action, notes }) {
     const innerBlocks = range.innerBlockIds.map((id) => blockMap.get(id)).filter(Boolean);
     const notesContent = notionBlocksToText(innerBlocks);
     return notesContent || "(empty checkpoint)";
+  } else if (action === "update") {
+    // Targeted edit path -- avoids replaceCheckpointRange's delete-every-
+    // inner-block-then-recreate behavior, which is wasteful (and racks up
+    // real Notion API calls) when a session just wants to tweak or extend
+    // an existing checkpoint rather than replace it wholesale.
+    const existing = await findPageByEntityId("checkpoint-latest");
+    if (!existing) {
+      throw new Error("No checkpoint found to update -- use action: \"save\" first to create one.");
+    }
+    if (!replacements?.length && !append_notes) {
+      throw new Error("action: \"update\" requires at least one of 'replacements' or 'append_notes' -- otherwise there's nothing to update. Use action: \"save\" for a full rewrite, or action: \"load\" to just read the current content.");
+    }
+    const blocksData = await notionRequest(`/blocks/${existing.pageId}/children?page_size=100`);
+    const blocks = blocksData.results || [];
+    const range = findCheckpointRange(blocks);
+    if (!range) {
+      throw new Error("Checkpoint page exists but no checkpoint range was found on it (may exceed the 100-block read window) -- use action: \"save\" to recreate it cleanly.");
+    }
+    const blockMap = new Map(blocks.map((b) => [b.id, b]));
+    const innerBlocks = range.innerBlockIds.map((id) => blockMap.get(id)).filter(Boolean);
+    const results = [];
+    const trunc = (s) => s.slice(0, 60) + (s.length > 60 ? "\u2026" : "");
+
+    if (replacements?.length) {
+      for (const { find, replace } of replacements) {
+        const matches = innerBlocks.filter((b) => notionBlockPlainText(b) === find);
+        if (matches.length === 0) {
+          throw new Error(`Update aborted, nothing further written \u2014 "${trunc(find)}" was not found among the checkpoint's current lines. Use checkpoint (action: "load") to see current content, or action: "save" for a full rewrite.`);
+        }
+        if (matches.length > 1) {
+          throw new Error(`Update aborted, nothing further written \u2014 "${trunc(find)}" matches ${matches.length} lines, but must be unique. Include more surrounding context in "find" to disambiguate.`);
+        }
+        const block = matches[0];
+        await notionRequest(`/blocks/${block.id}`, {
+          method: "PATCH",
+          body: { paragraph: { rich_text: [{ type: "text", text: { content: replace } }] } },
+        });
+        results.push(`Replaced line ("${trunc(find)}" \u2192 "${trunc(replace)}").`);
+      }
+    }
+
+    if (append_notes) {
+      const newLines = append_notes.split("\n").filter(Boolean);
+      const children = newLines.map(textBlock);
+      if (children.length) {
+        const afterId = range.innerBlockIds.length ? range.innerBlockIds[range.innerBlockIds.length - 1] : range.startBlockId;
+        await notionRequest(`/blocks/${existing.pageId}/children`, {
+          method: "PATCH",
+          body: { children, after: afterId },
+        });
+        results.push(`Appended ${children.length} new line(s).`);
+      }
+    }
+
+    // Bump the start marker's timestamp either way, so action: "load" and
+    // the visible marker both reflect that the checkpoint has moved since
+    // its last full save, even though this path never touched the marker
+    // block for any other reason.
+    const updated_at = new Date().toISOString();
+    await notionRequest(`/blocks/${range.startBlockId}`, {
+      method: "PATCH",
+      body: { paragraph: { rich_text: [{ type: "text", text: { content: buildCheckpointStartText(updated_at) } }] } },
+    });
+
+    return `Checkpoint updated successfully (targeted edit, no full rewrite).\n${results.join("\n")}\nURL: ${existing.url}`;
   } else {
-    throw new Error(`Invalid checkpoint action: "${action}" (expected "save" or "load").`);
+    throw new Error(`Invalid checkpoint action: "${action}" (expected "save", "load", or "update").`);
   }
 }
 
@@ -583,14 +648,19 @@ export function register(server) {
 
   server.tool(
     "checkpoint",
-    "Save or load a handoff note for the CURRENT session so a fresh session can recover context — NOT a general-purpose notes tool. Uses a fixed global checkpoint entity ('checkpoint-latest') stored via overwrite-in-place synced range.",
+    "Save, load, or update a handoff note for the CURRENT session so a fresh session can recover context — NOT a general-purpose notes tool. Uses a fixed global checkpoint entity ('checkpoint-latest'). 'save' fully rewrites the stored note (use for the first save in a session, or a genuine full replacement). 'update' makes a targeted edit instead of a full rewrite — use this for later checkpoints within the same session so each call doesn't delete and recreate every line.",
     {
-      action: z.enum(["save", "load"]).describe("Action to perform: 'save' to store handoff notes, 'load' to retrieve them"),
-      notes:  z.string().optional().describe("Freeform plain-text handoff notes to save (only meaningful for action: 'save')"),
+      action:       z.enum(["save", "load", "update"]).describe("Action to perform: 'save' to fully (re)write the handoff notes, 'load' to retrieve them, 'update' to make a targeted edit (replacements and/or append_notes) without rewriting the whole checkpoint"),
+      notes:        z.string().optional().describe("Freeform plain-text handoff notes to save (only used for action: 'save' — full rewrite)"),
+      replacements: z.array(z.object({
+        find:    z.string().describe("Exact plain text of an existing checkpoint line — must match exactly one line"),
+        replace: z.string().describe("New plain text for that line"),
+      })).optional().describe("Only used for action: 'update'. Targeted find/replace edits applied to specific existing lines in the checkpoint, instead of rewriting the whole note. Each 'find' must match exactly one current line — fails with nothing written on zero or multiple matches."),
+      append_notes: z.string().optional().describe("Only used for action: 'update'. Plain-text lines to append after the checkpoint's existing content, without touching anything already there. Combine with 'replacements' in the same call if needed."),
     },
-    async ({ action, notes }) => {
+    async ({ action, notes, replacements, append_notes }) => {
       try {
-        const text = await doCheckpoint({ action, notes });
+        const text = await doCheckpoint({ action, notes, replacements, append_notes });
         return { content: [{ type: "text", text }] };
       } catch (err) {
         return { content: [{ type: "text", text: err.message }], isError: true };
