@@ -601,6 +601,21 @@ export async function runEditorAgent({ owner, repo, branch, task, max_steps = ED
       });
     }
 
+    // Halfway-point nudge: fires exactly once, on the step that lands at
+    // the run's true halfway mark, and only if nothing has been written
+    // yet -- a budget-aware check-in rather than upfront pressure not to
+    // over-read (see buildSystemPreamble, which now explicitly permits
+    // reading as long as needed). Compared against effectiveOverallMaxSteps
+    // (the run's TRUE ceiling), not cappedSteps, for the same reason
+    // isFinalStep above does -- correct across a singleStep/async resume,
+    // where cappedSteps is only this call's own shrunk loop bound.
+    const halfwayPoint = Math.ceil(effectiveOverallMaxSteps / 2);
+    if (step === halfwayPoint && writtenFiles.length === 0) {
+      responseParts.push({
+        text: `[SYSTEM NOTE: you're ${halfwayPoint} step(s) into a ${effectiveOverallMaxSteps}-step budget and haven't written any files yet. If you've gathered enough context, start making the actual edits now -- you still have steps left, but not unlimited ones.]`,
+      });
+    }
+
     const remainingAfterThisStep = cappedSteps - step;
     if (remainingAfterThisStep === 1) {
       responseParts.push({
