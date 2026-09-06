@@ -41,6 +41,7 @@ import {
   FRONTEND_HARD_MAX_STEPS,
   FRONTEND_MAX_VALIDATE_CALLS,
 } from "../../../config.js";
+import { appendTask } from "../shared/preamble.js";
 
 // Same reasoning as the agent loop's isTransientGeminiError:
 // only 429 (rate limit) and 503 (overloaded) are worth resuming past --
@@ -50,7 +51,7 @@ function isTransientGeminiError(err) {
   return err?.status === 429 || err?.status === 503 || err?.transient === true;
 }
 
-function buildSystemPreamble({ owner, repo, branch, task }) {
+function buildSystemPreamble({ owner, repo, branch }) {
   return (
     "You are a frontend/UI design agent working inside ONE fixed repository and branch. You may " +
     `read and write files with these extensions only: ${FRONTEND_ALLOWED_EXTENSIONS.join(", ")}. ` +
@@ -70,8 +71,7 @@ function buildSystemPreamble({ owner, repo, branch, task }) {
     "per file is normal, looping it dozens of times is not.\n\n" +
     "Work iteratively: read what you need, make changes, validate before writing when it's cheap to do " +
     "so, write, and confirm the result makes sense. When the task is fully done, respond with a final " +
-    "plain-text summary of what you changed and no further function calls.\n\n" +
-    `Task: ${task}`
+    "plain-text summary of what you changed and no further function calls."
   );
 }
 
@@ -251,7 +251,7 @@ export async function runDesignAgent({ owner, repo, branch, task, max_steps = FR
     }
 
     runId = randomUUID();
-    contents = [{ role: "user", parts: [{ text: buildSystemPreamble({ owner, repo, branch, task }) }] }];
+    contents = [{ role: "user", parts: [{ text: appendTask(buildSystemPreamble({ owner, repo, branch }), task) }] }];
     transcript = [];
     startStep = 1;
     validateCounts = new Map();
