@@ -15,26 +15,37 @@
 //     has NO preamble at all -- a single direct Exa /answer call, no system
 //     prompt construction of any kind -- so it does not use this module.
 //
-// SCOPE NOTE -- deliberately NOT a full template unification: each
-// subsystem's own role description and tool-doc text stays owned by its own
-// *_delegate.js, because those are genuinely different per subsystem, not
-// just differently worded. Concretely: editor's write_file exposes a
-// `replacements` field for find/replace edits; designer's write_file
-// exposes the same underlying concept under a DIFFERENT field name,
-// `patch`. Editor's preamble explicitly states its per-run/per-file write
-// caps (EDITOR_MAX_FILES_PER_RUN/EDITOR_MAX_WRITES_PER_FILE); designer's
-// preamble does not mention any equivalent caps. Designer's preamble
-// explicitly lists FRONTEND_ALLOWED_EXTENSIONS; editor's does not state an
-// extension allowlist to the model at all. These are real, currently-live
-// behavioral differences between the two subsystems' prompts -- collapsing
-// them into one shared template would either silently change what one
-// subsystem tells its model, or require a separate design decision (e.g.
-// unifying replacements/patch naming) that's out of scope for this
-// extraction. What IS shared below is the structure that was already
-// byte-for-byte identical (or, for the variant/addendum mechanism, the same
-// logic agent_delegate.js already had, generalized so another subsystem
-// could opt into the same mechanism later without a second copy).
+// UPDATE (2026-09-06): this module now also holds the actual prompt TEXT
+// for all three write/investigate subsystems (buildAgentPreamble /
+// buildEditorPreamble / buildDesignerPreamble below), not just the shared
+// structural helpers -- the point of this file is to be the one place all
+// delegate_* preamble content lives, so someone managing these prompts has
+// one file to look in rather than three.
+//
+// IMPORTANT -- this is a relocation, NOT a unification: each builder below
+// is its own distinct function with its own wording, moved verbatim from
+// its subsystem's *_delegate.js. Nothing about what one subsystem tells its
+// model has changed or converged with another. Concretely: editor's
+// write_file exposes a `replacements` field for find/replace edits;
+// designer's write_file exposes the same underlying concept under a
+// DIFFERENT field name, `patch` -- both preserved as-is below. Editor's
+// preamble explicitly states its per-run/per-file write caps
+// (EDITOR_MAX_FILES_PER_RUN/EDITOR_MAX_WRITES_PER_FILE); designer's does
+// not mention any equivalent caps -- also preserved as-is. Designer's
+// preamble explicitly lists FRONTEND_ALLOWED_EXTENSIONS; editor's does not
+// state an extension allowlist to the model at all -- same, preserved.
+// These are real, currently-live behavioral differences between the
+// subsystems' prompts. If a future change wants to actually converge any
+// of this wording (e.g. unify replacements/patch naming), that is a
+// separate, deliberate decision to make on its own -- not something this
+// file's existence implies or should be used to justify quietly.
 // ---------------------------------------------------------------------------
+
+import {
+  EDITOR_MAX_FILES_PER_RUN,
+  EDITOR_MAX_WRITES_PER_FILE,
+  FRONTEND_ALLOWED_EXTENSIONS,
+} from "../../../config.js";
 
 /**
  * Selects between a base preamble and an optional trimmed variant, then
