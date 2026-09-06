@@ -316,7 +316,7 @@ export async function runEditorAgent({ owner, repo, branch, task, max_steps = ED
     await assertNotDefaultBranch(owner, repo, branch);
 
     runId = randomUUID();
-    contents = [{ role: "user", parts: [{ text: appendTask(buildSystemPreamble({ owner, repo, branch }), task) }] }];
+    contents = [{ role: "user", parts: [{ text: appendTask(buildEditorPreamble({ owner, repo, branch }), task) }] }];
     transcript = [];
     startStep = 1;
     writtenFiles = [];
@@ -643,7 +643,7 @@ export async function seedEditorRun({ owner, repo, branch, task, max_steps = EDI
   await assertNotDefaultBranch(owner, repo, branch);
 
   const runId = randomUUID();
-  const contents = [{ role: "user", parts: [{ text: appendTask(buildSystemPreamble({ owner, repo, branch }), task) }] }];
+  const contents = [{ role: "user", parts: [{ text: appendTask(buildEditorPreamble({ owner, repo, branch }), task) }] }];
   // Seeds the run's TRUE overall step ceiling (see runEditorAgent's
   // effectiveOverallMaxSteps for the full rationale) -- this is what lets
   // the editor worker's later singleStep resumes know when they've reached
