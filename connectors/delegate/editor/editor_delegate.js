@@ -104,9 +104,12 @@ function buildSystemPreamble({ owner, repo, branch, task }) {
     "(.md, .txt) have no syntax to check and will always report valid.\n\n" +
     "Work iteratively: read what you need, make changes, validate before writing when it's cheap to do so, " +
     "write, and confirm the result makes sense. This " +
-    "tool cannot open or merge pull requests -- a human reviews the branch afterward. When the task is " +
-    "fully done, respond with a final plain-text summary of what you changed (or didn't, and why) and no " +
-    "further function calls.\n\n" +
+    "tool cannot open or merge pull requests -- a human reviews the branch afterward. Only stop short of " +
+    "actually writing a change if you hit a genuine blocker (a missing file, an unresolvable conflict, a " +
+    "policy rejection you can't work around) -- having read enough to understand the task, or feeling that " +
+    "describing the change is clearer than making it, is NOT a blocker and is not a reason to stop early. " +
+    "When the task is fully done (or you've hit a real blocker), respond with a final plain-text summary of " +
+    "what you changed (or, if blocked, exactly what stopped you) and no further function calls.\n\n" +
     `Task: ${task}`
   );
 }
