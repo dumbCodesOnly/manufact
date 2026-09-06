@@ -609,12 +609,14 @@ export async function doCheckpoint({ action, notes, replacements, append_notes }
       const resolved = replacements.map(({ find, replace }) => {
         const matches = innerBlocks.filter((b) => notionBlockPlainText(b) === find);
         if (matches.length === 0) {
-          throw new Error(`Update aborted, nothing further written \u2014 "${trunc(find)}" was not found among the checkpoint's current lines. Use checkpoint (action: "load") to see current content, or action: "save" for a full rewrite.`);
+          throw new Error(`Update aborted, nothing written \u2014 "${trunc(find)}" was not found among the checkpoint's current lines. Use checkpoint (action: "load") to see current content, or action: "save" for a full rewrite.`);
         }
         if (matches.length > 1) {
-          throw new Error(`Update aborted, nothing further written \u2014 "${trunc(find)}" matches ${matches.length} lines, but must be unique. Include more surrounding context in "find" to disambiguate.`);
+          throw new Error(`Update aborted, nothing written \u2014 "${trunc(find)}" matches ${matches.length} lines, but must be unique. Include more surrounding context in "find" to disambiguate.`);
         }
-        const block = matches[0];
+        return { block: matches[0], find, replace };
+      });
+      for (const { block, find, replace } of resolved) {
         await notionRequest(`/blocks/${block.id}`, {
           method: "PATCH",
           body: { paragraph: { rich_text: [{ type: "text", text: { content: replace } }] } },
