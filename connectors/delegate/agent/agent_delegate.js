@@ -53,6 +53,7 @@ import { mem0Request } from "../../mem/client.js";
 import { notionRequest, notionRichTextToString, notionPageTitle, notionDatabaseTitle, notionBlocksToText } from "../../notion/client.js";
 import { DEFAULT_OWNER } from "../../../config.js";
 import { getDelegateHooks } from "../provider_hooks.js";
+import { selectPreambleVariant, appendTask } from "../shared/preamble.js";
 
 const HARD_MAX_STEPS = 30;
 export const HISTORY_FULL_DETAIL_STEPS = 3;
@@ -1373,8 +1374,13 @@ const SYSTEM_PREAMBLE_TRIMMED =
 // result; tighten back to harness-only once exploratory testing is done.
 // Defaults to "verbose" so every existing caller is unaffected.
 function buildSystemPreamble(provider, preambleVariant = "verbose") {
-  const base = preambleVariant === "trimmed" ? SYSTEM_PREAMBLE_TRIMMED : SYSTEM_PREAMBLE;
-  return provider === "bai" ? base + BAI_PREAMBLE_ADDENDUM : base;
+  return selectPreambleVariant({
+    base: SYSTEM_PREAMBLE,
+    trimmed: SYSTEM_PREAMBLE_TRIMMED,
+    variant: preambleVariant,
+    provider,
+    addenda: { bai: BAI_PREAMBLE_ADDENDUM },
+  });
 }
 
 // Mechanical-claim extraction (2026-08-27, fix for the confident-wrong-
@@ -1843,7 +1849,7 @@ export async function runInvestigation({ task, max_steps = 20, resume_run_id, pr
     // tool in tools.js already guards against a missing task on a
     // non-resumable call, so `task` is trustworthy here).
     runId = randomUUID();
-    contents = [{ role: "user", parts: [{ text: `${buildSystemPreamble(effectiveProvider, effectivePreambleVariant)}\n\nTask: ${task}` }] }];
+    contents = [{ role: "user", parts: [{ text: appendTask(buildSystemPreamble(effectiveProvider, effectivePreambleVariant), task) }] }];
     transcript = [];
     startStep = 1;
   }
