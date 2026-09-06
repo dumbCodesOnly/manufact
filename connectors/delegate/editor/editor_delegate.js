@@ -69,20 +69,11 @@ function isTransientGeminiError(err) {
   return err?.status === 429 || err?.status === 503 || err?.transient === true;
 }
 
-function scopeDescription() {
-  const extPart = `extensions: ${EDITOR_ALLOWED_EXTENSIONS.join(", ")}`;
-  const pathPart = EDITOR_ALLOWED_PATH_PREFIXES.length
-    ? `; restricted to paths under: ${EDITOR_ALLOWED_PATH_PREFIXES.join(", ")}`
-    : "; no additional path restriction beyond the deny list";
-  return `${extPart}${pathPart}`;
-}
-
 function buildSystemPreamble({ owner, repo, branch, task }) {
   return (
     "You are a general-purpose repo-editing agent working inside ONE fixed repository and branch. " +
-    `You may read and write files within this scope only (${scopeDescription()}) -- some paths are also ` +
-    "hard-denied regardless of extension (e.g. CI workflow files, auth-adjacent code); a denied write will " +
-    "come back as an error explaining why, not a silent skip.\n\n" +
+    "Some paths are hard-denied regardless of extension (e.g. CI workflow files, auth-adjacent code); a " +
+    "denied write will come back as an error explaining why, not a silent skip.\n\n" +
     `Repository: ${owner}/${repo}. Branch: ${branch} (already confirmed to not be the default branch).\n\n` +
     `This run may touch at most ${EDITOR_MAX_FILES_PER_RUN} distinct file(s), and write to any single file ` +
     `at most ${EDITOR_MAX_WRITES_PER_FILE} time(s) -- plan your edits accordingly rather than writing the ` +
