@@ -223,7 +223,7 @@ describe("writes-vs-claim guard -- fix for the raffle-app Stars-payment incident
     expect(providerChat).toHaveBeenCalledTimes(3);
   });
 
-  it("is single-fire: if the model still reports completion with zero writes after the verification round, that answer is accepted (not looped forever)", async () => {
+  it("is single-fire on RETRIES, but a repeated zero-write completion claim is flagged, not silently trusted", async () => {
     providerChat.mockResolvedValueOnce(textCandidate("Implemented the feature."));
     // Verification round: the model insists on the same unbacked claim
     // without ever calling write_file.
@@ -231,16 +231,44 @@ describe("writes-vs-claim guard -- fix for the raffle-app Stars-payment incident
 
     const result = await runEditorAgent({ owner: OWNER, repo: REPO, branch: BRANCH, task: "implement something" });
 
-    // Bounded to exactly one extra round -- the second draft is trusted as
-    // final regardless of whether it still holds up, same single-fire
-    // contract as agent_delegate.js's own pendingVerification. This is a
-    // deliberate cost/thoroughness tradeoff (see buildEditorVerificationPrompt's
-    // header comment): it does not GUARANTEE catching every fabrication, but
-    // it does guarantee the loop never gets stuck retrying indefinitely.
+    // Bounded to exactly one extra round -- no third providerChat call is
+    // made, same single-fire contract as agent_delegate.js's own
+    // pendingVerification. But unlike before, the loop no longer trusts the
+    // still-unbacked claim silently: it's returned flagged so a caller
+    // can't mistake it for a verified success.
     expect(providerChat).toHaveBeenCalledTimes(2);
     expect(result.failed).toBeFalsy();
-    expect(result.answer).toBe("Confirmed -- implemented the feature.");
+    expect(result.answer).toMatch(/^UNVERIFIED_COMPLETION_CLAIM: Confirmed -- implemented the feature\./);
     expect(result.writtenFiles).toEqual([]);
+  });
+
+  it("flags a fabricated completion claim landing on the run's actual final step, where the tools-enabled round can't fire", async () => {
+    // max_steps: 1 means step 1 IS effectiveOverallMaxSteps -- isFinalStep
+    // is true, so tools are withheld and the normal (!withholdTools &&
+    // step < cappedSteps) verification branch is skipped entirely. This is
+    // the shape that reproduces the original raffle-app incident if its
+    // fabricated summary happened to land on the run's last allowed step.
+    providerChat.mockResolvedValueOnce(textCandidate("Implemented the Stars payment confirmation."));
+    // Inline no-tools corrective call: the model is told plainly it has no
+    // tool access this turn and repeats the same unbacked claim anyway.
+    providerChat.mockResolvedValueOnce(textCandidate("Confirmed -- implemented the Stars payment confirmation."));
+
+    const result = await runEditorAgent({ owner: OWNER, repo: REPO, branch: BRANCH, task: "implement Stars payment confirmation", max_steps: 1 });
+
+    expect(providerChat).toHaveBeenCalledTimes(2);
+    expect(result.failed).toBeFalsy();
+    expect(result.answer).toMatch(/^UNVERIFIED_COMPLETION_CLAIM:/);
+    expect(result.writtenFiles).toEqual([]);
+  });
+
+  it("does not flag an honest zero-write answer that never claimed completion", async () => {
+    providerChat.mockResolvedValueOnce(textCandidate("No changes were needed -- the confirmation logic already handles this case correctly."));
+    providerChat.mockResolvedValueOnce(textCandidate("Confirmed -- no changes were needed."));
+
+    const result = await runEditorAgent({ owner: OWNER, repo: REPO, branch: BRANCH, task: "check if a change is needed" });
+
+    expect(result.answer).not.toMatch(/UNVERIFIED_COMPLETION_CLAIM/);
+    expect(result.answer).toBe("Confirmed -- no changes were needed.");
   });
 
   it("surfaces fallbackModelUsed on the final result when any step this run was served by a Gemini fallback model", async () => {
