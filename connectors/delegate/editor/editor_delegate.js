@@ -471,6 +471,7 @@ export async function runEditorAgent({ owner, repo, branch, task, max_steps = ED
     consecutiveAllRepeatSteps,
     overallMaxSteps: effectiveOverallMaxSteps,
     provider: effectiveProvider,
+    pendingVerification,
   });
 
   for (let step = startStep; step <= cappedSteps; step++) {
