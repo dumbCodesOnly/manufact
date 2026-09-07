@@ -320,6 +320,17 @@ export async function runEditorAgent({ owner, repo, branch, task, max_steps = ED
   let repeatCounts = new Map();
   let resultCache = new Map();
   let consecutiveAllRepeatSteps = 0;
+  // Writes-vs-claim verification pass (see buildEditorVerificationPrompt's
+  // header comment above for the incident/rationale) -- true once the model
+  // has produced a draft final answer and been sent back for one no-fresh-
+  // trust self-check round before that answer is persisted as done. Single-
+  // fire, same pattern/reasoning as agent_delegate.js's own pendingVerification:
+  // bounds this to exactly one extra step regardless of what comes back on
+  // the second pass, and is persisted across resumes so a run that dies
+  // mid-verification (e.g. a transient 429/503 on the verification call
+  // itself) resumes back into the verification turn rather than silently
+  // re-drafting a whole new answer from scratch.
+  let pendingVerification = false;
 
   const checkpoint = resume_run_id ? await loadCheckpoint(resume_run_id) : null;
 
