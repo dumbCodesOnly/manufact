@@ -505,6 +505,7 @@ export async function runEditorAgent({ owner, repo, branch, task, max_steps = ED
       candidate = await providerChat(contents, { tools: withholdTools ? undefined : declarations, provider: effectiveProvider });
       const cascadeLog = formatCascadeLogLine(candidate, { step });
       if (cascadeLog) transcript.push(cascadeLog);
+      if (candidate._fallbackModelUsed) fallbackModelUsed = candidate._fallbackModelUsed;
     } catch (err) {
       await saveState(step - 1);
       const redisOk = isRedisConfigured();
