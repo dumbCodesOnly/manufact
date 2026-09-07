@@ -93,11 +93,19 @@ describe("guardrail #8 -- no PR-opening/merging capability in this loop's own fu
     // as any other unknown function name, and the run is not derailed.
     providerChat.mockResolvedValueOnce(functionCallCandidate([{ name: "merge_pull_request", args: { pull_number: 1 } }]));
     providerChat.mockResolvedValueOnce(textCandidate("Could not merge -- that tool isn't available to me."));
+    // Writes-vs-claim verification pass: the first draft plain-text answer
+    // (above) arrives with tool access still available and budget left, so
+    // it is sent back for exactly one corrective round before being
+    // trusted (see editor_delegate.js's buildEditorVerificationPrompt/
+    // pendingVerification) -- this third mocked response is that round's
+    // reply, re-affirming the same answer as final.
+    providerChat.mockResolvedValueOnce(textCandidate("Confirmed -- could not merge, that tool isn't available to me."));
 
     const result = await runEditorAgent({ owner: OWNER, repo: REPO, branch: BRANCH, task: "merge my PR" });
 
     expect(result.failed).toBeFalsy();
     expect(result.transcript.join("\n")).toMatch(/unknown function "merge_pull_request"/i);
+    expect(providerChat).toHaveBeenCalledTimes(3);
   });
 
   it("only declares read_file, write_file, and validate to the model -- structurally, not just by not calling the others", async () => {
