@@ -47,6 +47,21 @@
 import { randomUUID } from "node:crypto";
 import { providerChat } from "../../llm/router.js";
 import { formatCascadeLogLine } from "../../llm/cascade_log.js";
+// Reused, provider-agnostic verification helpers from the read-only
+// investigation loop (see that file's own header comments for the full
+// rationale/failure-mode evidence behind each). Both are pure functions
+// over (answerText) / (claims, contents) and carry no bai-specific or
+// investigation-specific assumptions -- extractMechanicalClaims just
+// regexes identifier/backtick-quoted shapes out of a draft answer, and
+// findUnverifiedClaims just checks those strings against the raw
+// functionResponse text already sitting in `contents`. Deliberately NOT
+// importing detectToolCallLeakage/extractConditionalClaims/
+// lineIsVerbatimInToolResults here -- the former is a bai-only backstop
+// for a failure mode never observed on Gemini, and the latter two target a
+// different failure shape (a fabricated RELATIONSHIP between two real
+// tokens) than the one this file's own guard below is for (a fabricated
+// WRITE that never happened at all).
+import { extractMechanicalClaims, findUnverifiedClaims } from "../agent/agent_delegate.js";
 import { readFile, writeFile, assertNotDefaultBranch } from "../../github/editor_tool_functions.js";
 import { validateByExtension } from "../../github/editor_validate.js";
 import { saveCheckpoint, loadCheckpoint } from "./editor_checkpoint.js";
@@ -66,6 +81,100 @@ import { appendTask, buildEditorPreamble } from "../shared/preamble.js";
 // else reproduces identically on a resume.
 function isTransientGeminiError(err) {
   return err?.status === 429 || err?.status === 503 || err?.transient === true;
+}
+
+// ---------------------------------------------------------------------------
+// Writes-vs-claim guard (fix for the 2026-09-06/07 raffle-app Stars-payment
+// incident: a run served entirely by the fallback model "gemini-3.5-flash-lite"
+// took 9 read_file steps, wrote NOTHING, then produced a confident, detailed
+// completion report -- specific function names, specific files claimed
+// updated -- none of which existed in the actual diff. Confirmed via
+// diff_files against main: zero differences. Root cause: this loop's
+// completion path used to trust the model's own final text unconditionally,
+// with zero cross-check against `writtenFiles`, the exact ground-truth list
+// already sitting in scope at that point).
+//
+// Modeled directly on agent_delegate.js's own verification pass (see that
+// file's VERIFICATION_PROMPT/pendingVerification for the general pattern
+// and the live-testing evidence behind it), but narrower and pointed at
+// this loop's own failure mode rather than ported wholesale:
+//   - agent_delegate.js verifies claims about RETRIEVED DATA (does a quoted
+//     fact/identifier appear verbatim in tool output already gathered).
+//   - This guard verifies claims about ACTIONS TAKEN (does a claimed write
+//     appear in writtenFiles, the run's own append-only write log) --
+//     a check agent_delegate.js has no reason to need, since it never
+//     writes anything.
+// Both flow into the SAME single-fire pendingVerification mechanism below
+// (one extra round, tools re-enabled, then whatever comes back is final --
+// see agent_delegate.js's own comments for why a no-tools self-check was
+// tried first and found insufficient: a model asked to double-check purely
+// from memory just re-asserts its own mistake with equal confidence).
+//
+// Deliberately does NOT also port extractConditionalClaims/
+// lineIsVerbatimInToolResults/detectToolCallLeakage -- those target
+// different failure shapes (a fabricated relationship between two real
+// facts; bai-specific text-mimicking-a-function-call) neither observed nor
+// relevant to this incident. See this file's import comment for the same
+// scoping note.
+function buildEditorVerificationPrompt({ answer, contents, writtenFiles, toolsAvailable }) {
+  const mechanicalClaims = extractMechanicalClaims(answer);
+  return findUnverifiedClaims(mechanicalClaims, contents).then((unverifiedClaims) => {
+    const writeLogLine = writtenFiles.length
+      ? `This run has written to the following file(s) so far: ${writtenFiles.join(", ")}.`
+      : `This run has NOT written to any file yet -- writtenFiles is empty.`;
+    const actionOnMismatch = toolsAvailable
+      ? `either call write_file now to actually make it (you still have tool access this turn), or rewrite your ` +
+        `final answer to say plainly it was not completed and why, instead of reporting it as done.`
+      : `you do NOT have tool access this turn -- you cannot make that change now. Rewrite your final answer to ` +
+        `say plainly that the work described was not actually completed (and why), instead of reporting it as done.`;
+    const writeLogNote =
+      `[WRITE LOG CHECK] ${writeLogLine} If your answer above describes specific code changes (a function added, ` +
+      `a handler wired up, a file refactored, a value updated) as already done, every such claim must correspond ` +
+      `to an actual write_file call already reflected in the write log above -- not a plan, not what you intended ` +
+      `to do, not what a read_file call showed could be done. If you described a change whose file is not in that ` +
+      `list, that change has NOT been made: ${actionOnMismatch}`;
+    const claimAction = toolsAvailable
+      ? `re-read the specific file it's claimed to come from and confirm it exact-matches what's actually there ` +
+        `(or actually write it, if it was meant to be a change you made), THEN either keep the claim only if you ` +
+        `can now back it with a fresh, real tool result, or correct it.`
+      : `you do NOT have tool access this turn to re-check or write it -- correct your answer to not assert this ` +
+        `claim as fact unless it is already backed by a tool result visible above.`;
+    const claimNote = unverifiedClaims.length
+      ? `\n\n[SPECIFIC ITEMS TO CHECK] The following identifier(s)/snippet(s) in your draft answer do not appear ` +
+        `verbatim in any tool result (read_file/write_file/validate output) gathered so far this run: ` +
+        `${unverifiedClaims.map((c) => `"${c}"`).join(", ")}. For EACH one: ${claimAction} Do not restate any of ` +
+        `these unchanged based on memory or on the fact that you already wrote it once.`
+      : "";
+    const toolsLine = toolsAvailable
+      ? `You have tool access again this turn.`
+      : `You do NOT have tool access this turn -- no further function calls are possible, only a corrected ` +
+        `plain-text answer.`;
+    return (
+      `[SYSTEM NOTE -- verification pass] Before your answer above is treated as final, check it against the ` +
+      `write log and tool results already produced in this run -- not your own summary of them. ${toolsLine} ` +
+      `Once you are done checking, respond with the corrected final answer (or the same answer, if it already ` +
+      `holds up under this check) as plain text with no further function calls.\n\n` +
+      writeLogNote + claimNote
+    );
+  });
+}
+
+// Cheap heuristic for "does this answer claim completed work", used to (a)
+// decide whether the no-tools fallback verification path below is worth
+// running at all, and (b) flag a final answer that still claims completion
+// with zero writes after verification has already run (or couldn't run).
+// Deliberately conservative -- keyword substring match plus a negation
+// check -- since false negatives here just mean a claim goes unflagged
+// (same as before this fix), while false positives would incorrectly flag
+// honest "nothing needed to change" answers.
+const COMPLETION_KEYWORDS = [
+  "implement", "added", "fixed", "wrote", "written", "created", "refactored",
+  "updated", "wired up", "completed", "done",
+];
+const COMPLETION_NEGATION_RE = /\b(not|n't|no changes|nothing was|couldn't|unable to|failed to|wasn't|weren't)\b/i;
+function looksLikeCompletionClaim(answer) {
+  const lower = answer.toLowerCase();
+  return COMPLETION_KEYWORDS.some((k) => lower.includes(k)) && !COMPLETION_NEGATION_RE.test(lower);
 }
 
 // buildSystemPreamble's actual text now lives in ../shared/preamble.js as
@@ -239,6 +348,29 @@ export async function runEditorAgent({ owner, repo, branch, task, max_steps = ED
   let repeatCounts = new Map();
   let resultCache = new Map();
   let consecutiveAllRepeatSteps = 0;
+  // Tracks whether ANY step this run was served by a Gemini fallback model
+  // (see connectors/gemini/client.js's cascade -- a 429/503/network error on
+  // the primary model/key silently drops to GEMINI_FALLBACK_MODELS, e.g.
+  // "gemini-3.5-flash-lite"). formatCascadeLogLine already logs this into
+  // `transcript` per-step, but that's a side log a caller has to know to
+  // read -- the incident this file's writes-vs-claim guard fixes involved
+  // EVERY step being served by a weak fallback model with the caller only
+  // discovering that fact by manually reading the transcript after the
+  // fact. Surfaced directly on the returned result below so a caller can
+  // treat "answer came from a fallback model" as a first-class signal to
+  // weigh, without needing to parse transcript strings.
+  let fallbackModelUsed = null;
+  // Writes-vs-claim verification pass (see buildEditorVerificationPrompt's
+  // header comment above for the incident/rationale) -- true once the model
+  // has produced a draft final answer and been sent back for one no-fresh-
+  // trust self-check round before that answer is persisted as done. Single-
+  // fire, same pattern/reasoning as agent_delegate.js's own pendingVerification:
+  // bounds this to exactly one extra step regardless of what comes back on
+  // the second pass, and is persisted across resumes so a run that dies
+  // mid-verification (e.g. a transient 429/503 on the verification call
+  // itself) resumes back into the verification turn rather than silently
+  // re-drafting a whole new answer from scratch.
+  let pendingVerification = false;
 
   const checkpoint = resume_run_id ? await loadCheckpoint(resume_run_id) : null;
 
@@ -263,6 +395,7 @@ export async function runEditorAgent({ owner, repo, branch, task, max_steps = ED
       runId: resume_run_id,
       task: checkpoint.task,
       writtenFiles: checkpoint.writtenFiles || [],
+      fallbackModelUsed: checkpoint.fallbackModelUsed || null,
       failed: false,
     };
   }
@@ -287,6 +420,11 @@ export async function runEditorAgent({ owner, repo, branch, task, max_steps = ED
     effectiveProvider = checkpoint.provider || provider;
     repeatCounts = new Map(Object.entries(checkpoint.repeatCounts || {}));
     consecutiveAllRepeatSteps = checkpoint.consecutiveAllRepeatSteps || 0;
+    // Checkpoints saved before this field existed won't have it -- default
+    // to false (normal tool-use resumes as before), same defensive pattern
+    // as every other field restored here.
+    pendingVerification = checkpoint.pendingVerification || false;
+    fallbackModelUsed = checkpoint.fallbackModelUsed || null;
   } else if (resume_run_id) {
     // Same "fail loudly and distinctly" reasoning as designer_delegate.js --
     // this loop has no task-optional fallback path either, so there's no
@@ -375,6 +513,8 @@ export async function runEditorAgent({ owner, repo, branch, task, max_steps = ED
     consecutiveAllRepeatSteps,
     overallMaxSteps: effectiveOverallMaxSteps,
     provider: effectiveProvider,
+    pendingVerification,
+    fallbackModelUsed,
   });
 
   for (let step = startStep; step <= cappedSteps; step++) {
@@ -394,6 +534,7 @@ export async function runEditorAgent({ owner, repo, branch, task, max_steps = ED
       candidate = await providerChat(contents, { tools: withholdTools ? undefined : declarations, provider: effectiveProvider });
       const cascadeLog = formatCascadeLogLine(candidate, { step });
       if (cascadeLog) transcript.push(cascadeLog);
+      if (candidate._fallbackModelUsed) fallbackModelUsed = candidate._fallbackModelUsed;
     } catch (err) {
       await saveState(step - 1);
       const redisOk = isRedisConfigured();
@@ -451,6 +592,84 @@ export async function runEditorAgent({ owner, repo, branch, task, max_steps = ED
           failed: true,
         };
       }
+      // Writes-vs-claim verification pass -- see buildEditorVerificationPrompt's
+      // header comment for the incident this exists to fix. Fires at most
+      // once per run (guarded by !pendingVerification): a draft answer that
+      // arrives with tool access still available (not already a forced
+      // no-tools turn) and step budget left gets sent back for one
+      // corrective round BEFORE it's trusted, checking it against
+      // writtenFiles and any tool-result text already gathered. Tools stay
+      // ENABLED this turn (unlike isFinalStep/stuckLoopForce, which
+      // deliberately withhold them to force a stop) -- same reasoning as
+      // agent_delegate.js's own verification pass: a model asked to
+      // self-check purely from memory just re-asserts its own mistake with
+      // equal confidence, but tool access lets it actually re-read the file
+      // or make the write it claimed, rather than guess.
+      if (!withholdTools && !pendingVerification && step < cappedSteps) {
+        const verificationPrompt = await buildEditorVerificationPrompt({ answer, contents, writtenFiles, toolsAvailable: true });
+        contents.push({ role: "model", parts });
+        contents.push({ role: "user", parts: [{ text: verificationPrompt }] });
+        pendingVerification = true;
+        await saveState(step);
+        continue;
+      }
+
+      // Fallback verification path for exactly the case the block above
+      // can't cover: no more loop iterations left this run (withholdTools --
+      // final step or stuck-loop force -- or step already at cappedSteps),
+      // but writtenFiles is empty and the draft answer still reads like a
+      // completion claim. This is the shape most likely to reproduce the
+      // original incident (a run that burns its whole step budget reading,
+      // then has to answer with tools withheld) -- the block above would
+      // silently skip it entirely. Runs ONE inline corrective providerChat
+      // call right here (not via the loop's own continue/step machinery,
+      // since no budget remains for that), explicitly telling the model it
+      // has no tool access this turn -- unlike the tools-enabled prompt
+      // above, this can only ask for an honest rewrite, never a write_file
+      // call, since one isn't possible on a withheld-tools turn (attempting
+      // one would be treated as a function call on a no-tools step and
+      // discard the whole run as failed).
+      let finalAnswer = answer;
+      if (!pendingVerification && writtenFiles.length === 0 && looksLikeCompletionClaim(answer)) {
+        pendingVerification = true;
+        const verificationPrompt = await buildEditorVerificationPrompt({ answer, contents, writtenFiles, toolsAvailable: false });
+        contents.push({ role: "model", parts });
+        contents.push({ role: "user", parts: [{ text: verificationPrompt }] });
+        try {
+          const correctedCandidate = await providerChat(contents, { tools: undefined, provider: effectiveProvider });
+          const cascadeLog = formatCascadeLogLine(correctedCandidate, { step });
+          if (cascadeLog) transcript.push(cascadeLog);
+          if (correctedCandidate._fallbackModelUsed) fallbackModelUsed = correctedCandidate._fallbackModelUsed;
+          const correctedParts = correctedCandidate.content?.parts || [];
+          const correctedText = correctedParts.map((p) => p.text || "").join("").trim();
+          if (correctedText) {
+            contents.push({ role: "model", parts: correctedParts });
+            finalAnswer = correctedText;
+          }
+        } catch {
+          // A transient failure on this best-effort inline check shouldn't
+          // sink the whole run -- fall through with the original draft
+          // answer, which the safety check right below will still flag if
+          // it still looks like an unbacked completion claim.
+        }
+      }
+
+      // Final safety check -- runs regardless of whether either
+      // verification path above fired (including the case where
+      // pendingVerification was ALREADY true and the model simply repeated
+      // the same unbacked claim on its second pass: the single-fire
+      // contract bounds the RETRIES, not whether the result gets trusted).
+      // A completion claim with zero writes that survives verification (or
+      // never got a normal round to survive) is never silently returned as
+      // a clean success -- it's flagged so a caller can't mistake it for a
+      // verified result.
+      if (writtenFiles.length === 0 && looksLikeCompletionClaim(finalAnswer)) {
+        finalAnswer =
+          `UNVERIFIED_COMPLETION_CLAIM: ${finalAnswer}\n\n(This run made zero writes but its own final answer ` +
+          `describes completed work. This claim did not hold up under the writes-vs-claim verification check -- ` +
+          `treat it as unverified and confirm manually before relying on it.)`;
+      }
+
       // Persist a "done" checkpoint (status + finalAnswer) here instead of
       // deleting it -- a resume_run_id caller polling a background/worker-
       // driven run needs SOMETHING to read once the run finishes, and
@@ -476,10 +695,12 @@ export async function runEditorAgent({ owner, repo, branch, task, max_steps = ED
         consecutiveAllRepeatSteps,
         overallMaxSteps: effectiveOverallMaxSteps,
         provider: effectiveProvider,
+        pendingVerification,
+        fallbackModelUsed,
         status: "done",
-        finalAnswer: answer,
+        finalAnswer,
       });
-      return { answer, steps: step, transcript, runId, task: effectiveTask, writtenFiles };
+      return { answer: finalAnswer, steps: step, transcript, runId, task: effectiveTask, writtenFiles, fallbackModelUsed, failed: false };
     }
 
     contents.push({ role: "model", parts });
