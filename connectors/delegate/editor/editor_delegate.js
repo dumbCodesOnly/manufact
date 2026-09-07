@@ -799,7 +799,7 @@ export async function runEditorAgent({ owner, repo, branch, task, max_steps = ED
       });
     }
 
-    const remainingAfterThisStep = cappedSteps - step;
+    const remainingAfterThisStep = effectiveOverallMaxSteps - step;
     if (remainingAfterThisStep === 1) {
       responseParts.push({
         text: "[SYSTEM NOTE: only 1 step remains after this one, and the step after that has NO tools available. Finish any in-progress write now if the file is ready, or explain what's left undone -- do not leave a task half-written without saying so.]",
