@@ -367,6 +367,7 @@ export async function runEditorAgent({ owner, repo, branch, task, max_steps = ED
       runId: resume_run_id,
       task: checkpoint.task,
       writtenFiles: checkpoint.writtenFiles || [],
+      fallbackModelUsed: checkpoint.fallbackModelUsed || null,
       failed: false,
     };
   }
