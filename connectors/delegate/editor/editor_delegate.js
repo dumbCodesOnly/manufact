@@ -606,12 +606,68 @@ export async function runEditorAgent({ owner, repo, branch, task, max_steps = ED
       // equal confidence, but tool access lets it actually re-read the file
       // or make the write it claimed, rather than guess.
       if (!withholdTools && !pendingVerification && step < cappedSteps) {
-        const verificationPrompt = await buildEditorVerificationPrompt({ answer, contents, writtenFiles });
+        const verificationPrompt = await buildEditorVerificationPrompt({ answer, contents, writtenFiles, toolsAvailable: true });
         contents.push({ role: "model", parts });
         contents.push({ role: "user", parts: [{ text: verificationPrompt }] });
         pendingVerification = true;
         await saveState(step);
         continue;
+      }
+
+      // Fallback verification path for exactly the case the block above
+      // can't cover: no more loop iterations left this run (withholdTools --
+      // final step or stuck-loop force -- or step already at cappedSteps),
+      // but writtenFiles is empty and the draft answer still reads like a
+      // completion claim. This is the shape most likely to reproduce the
+      // original incident (a run that burns its whole step budget reading,
+      // then has to answer with tools withheld) -- the block above would
+      // silently skip it entirely. Runs ONE inline corrective providerChat
+      // call right here (not via the loop's own continue/step machinery,
+      // since no budget remains for that), explicitly telling the model it
+      // has no tool access this turn -- unlike the tools-enabled prompt
+      // above, this can only ask for an honest rewrite, never a write_file
+      // call, since one isn't possible on a withheld-tools turn (attempting
+      // one would be treated as a function call on a no-tools step and
+      // discard the whole run as failed).
+      let finalAnswer = answer;
+      if (!pendingVerification && writtenFiles.length === 0 && looksLikeCompletionClaim(answer)) {
+        pendingVerification = true;
+        const verificationPrompt = await buildEditorVerificationPrompt({ answer, contents, writtenFiles, toolsAvailable: false });
+        contents.push({ role: "model", parts });
+        contents.push({ role: "user", parts: [{ text: verificationPrompt }] });
+        try {
+          const correctedCandidate = await providerChat(contents, { tools: undefined, provider: effectiveProvider });
+          const cascadeLog = formatCascadeLogLine(correctedCandidate, { step });
+          if (cascadeLog) transcript.push(cascadeLog);
+          if (correctedCandidate._fallbackModelUsed) fallbackModelUsed = correctedCandidate._fallbackModelUsed;
+          const correctedParts = correctedCandidate.content?.parts || [];
+          const correctedText = correctedParts.map((p) => p.text || "").join("").trim();
+          if (correctedText) {
+            contents.push({ role: "model", parts: correctedParts });
+            finalAnswer = correctedText;
+          }
+        } catch {
+          // A transient failure on this best-effort inline check shouldn't
+          // sink the whole run -- fall through with the original draft
+          // answer, which the safety check right below will still flag if
+          // it still looks like an unbacked completion claim.
+        }
+      }
+
+      // Final safety check -- runs regardless of whether either
+      // verification path above fired (including the case where
+      // pendingVerification was ALREADY true and the model simply repeated
+      // the same unbacked claim on its second pass: the single-fire
+      // contract bounds the RETRIES, not whether the result gets trusted).
+      // A completion claim with zero writes that survives verification (or
+      // never got a normal round to survive) is never silently returned as
+      // a clean success -- it's flagged so a caller can't mistake it for a
+      // verified result.
+      if (writtenFiles.length === 0 && looksLikeCompletionClaim(finalAnswer)) {
+        finalAnswer =
+          `UNVERIFIED_COMPLETION_CLAIM: ${finalAnswer}\n\n(This run made zero writes but its own final answer ` +
+          `describes completed work. This claim did not hold up under the writes-vs-claim verification check -- ` +
+          `treat it as unverified and confirm manually before relying on it.)`;
       }
 
       // Persist a "done" checkpoint (status + finalAnswer) here instead of
@@ -642,9 +698,9 @@ export async function runEditorAgent({ owner, repo, branch, task, max_steps = ED
         pendingVerification,
         fallbackModelUsed,
         status: "done",
-        finalAnswer: answer,
+        finalAnswer,
       });
-      return { answer, steps: step, transcript, runId, task: effectiveTask, writtenFiles, fallbackModelUsed, failed: false };
+      return { answer: finalAnswer, steps: step, transcript, runId, task: effectiveTask, writtenFiles, fallbackModelUsed, failed: false };
     }
 
     contents.push({ role: "model", parts });
