@@ -1285,7 +1285,7 @@ const FUNCTION_NAME_SET = new Set(FUNCTIONS.map((f) => f.name));
 // transcript, not a wrong answer.
 const IDENTIFIER_CLAIM_PATTERN = /\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b|\b[a-z][a-zA-Z0-9]*[A-Z][a-zA-Z0-9]*\b|`[^`\n]+`/g;
 
-function extractMechanicalClaims(answerText) {
+export function extractMechanicalClaims(answerText) {
   const claims = new Set();
   for (const m of answerText.matchAll(IDENTIFIER_CLAIM_PATTERN)) {
     const raw = m[0].startsWith("`") ? m[0].slice(1, -1) : m[0];
