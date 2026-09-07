@@ -196,3 +196,65 @@ describe("guardrail #6 -- per-run and per-file write caps", () => {
     expect(result.transcript.join("\n")).toMatch(/deny pattern/i);
   });
 });
+
+describe("writes-vs-claim guard -- fix for the raffle-app Stars-payment incident (fabricated completion report with zero writes)", () => {
+  it("lets the model self-correct by actually writing during the forced verification round, instead of trusting a zero-write completion claim", async () => {
+    // Step 1: a draft answer claims the work is done, but writtenFiles is
+    // still empty at this point -- this is the exact incident shape (9
+    // read_file steps, zero writes, a confident fabricated summary).
+    providerChat.mockResolvedValueOnce(textCandidate("Implemented the Stars payment confirmation in providers.ts."));
+    // Step 2 (the forced verification round, tools still enabled): the
+    // model catches its own mistake and actually performs the write this
+    // time, rather than repeating the same unbacked claim.
+    providerChat.mockResolvedValueOnce(
+      functionCallCandidate([{ name: "write_file", args: { path: "providers.ts", content: "real content" } }])
+    );
+    // Step 3: now that the write is real, the model's final answer is
+    // trusted without a second verification round (pendingVerification is
+    // already true by this point -- single-fire).
+    providerChat.mockResolvedValueOnce(textCandidate("Implemented the Stars payment confirmation in providers.ts."));
+    writeFile.mockResolvedValueOnce({ path: "providers.ts", sha: "s", commitSha: "c1234567", noop: false });
+
+    const result = await runEditorAgent({ owner: OWNER, repo: REPO, branch: BRANCH, task: "implement Stars payment confirmation" });
+
+    expect(result.failed).toBeFalsy();
+    expect(result.writtenFiles).toEqual(["providers.ts"]);
+    expect(writeFile).toHaveBeenCalledTimes(1);
+    expect(providerChat).toHaveBeenCalledTimes(3);
+  });
+
+  it("is single-fire: if the model still reports completion with zero writes after the verification round, that answer is accepted (not looped forever)", async () => {
+    providerChat.mockResolvedValueOnce(textCandidate("Implemented the feature."));
+    // Verification round: the model insists on the same unbacked claim
+    // without ever calling write_file.
+    providerChat.mockResolvedValueOnce(textCandidate("Confirmed -- implemented the feature."));
+
+    const result = await runEditorAgent({ owner: OWNER, repo: REPO, branch: BRANCH, task: "implement something" });
+
+    // Bounded to exactly one extra round -- the second draft is trusted as
+    // final regardless of whether it still holds up, same single-fire
+    // contract as agent_delegate.js's own pendingVerification. This is a
+    // deliberate cost/thoroughness tradeoff (see buildEditorVerificationPrompt's
+    // header comment): it does not GUARANTEE catching every fabrication, but
+    // it does guarantee the loop never gets stuck retrying indefinitely.
+    expect(providerChat).toHaveBeenCalledTimes(2);
+    expect(result.failed).toBeFalsy();
+    expect(result.answer).toBe("Confirmed -- implemented the feature.");
+    expect(result.writtenFiles).toEqual([]);
+  });
+
+  it("surfaces fallbackModelUsed on the final result when any step this run was served by a Gemini fallback model", async () => {
+    const fallbackCandidate = (text) => ({
+      content: { role: "model", parts: [{ text }] },
+      _fallbackModelUsed: "gemini-3.5-flash-lite",
+      _fallbackKeyIndex: 0,
+    });
+    providerChat.mockResolvedValueOnce(fallbackCandidate("No changes were needed."));
+    providerChat.mockResolvedValueOnce(fallbackCandidate("Confirmed -- no changes were needed."));
+
+    const result = await runEditorAgent({ owner: OWNER, repo: REPO, branch: BRANCH, task: "check if a change is needed" });
+
+    expect(result.fallbackModelUsed).toBe("gemini-3.5-flash-lite");
+    expect(result.transcript.join("\n")).toMatch(/\[CASCADE\] served by fallback model "gemini-3\.5-flash-lite"/);
+  });
+});
