@@ -47,6 +47,21 @@
 import { randomUUID } from "node:crypto";
 import { providerChat } from "../../llm/router.js";
 import { formatCascadeLogLine } from "../../llm/cascade_log.js";
+// Reused, provider-agnostic verification helpers from the read-only
+// investigation loop (see that file's own header comments for the full
+// rationale/failure-mode evidence behind each). Both are pure functions
+// over (answerText) / (claims, contents) and carry no bai-specific or
+// investigation-specific assumptions -- extractMechanicalClaims just
+// regexes identifier/backtick-quoted shapes out of a draft answer, and
+// findUnverifiedClaims just checks those strings against the raw
+// functionResponse text already sitting in `contents`. Deliberately NOT
+// importing detectToolCallLeakage/extractConditionalClaims/
+// lineIsVerbatimInToolResults here -- the former is a bai-only backstop
+// for a failure mode never observed on Gemini, and the latter two target a
+// different failure shape (a fabricated RELATIONSHIP between two real
+// tokens) than the one this file's own guard below is for (a fabricated
+// WRITE that never happened at all).
+import { extractMechanicalClaims, findUnverifiedClaims } from "../agent/agent_delegate.js";
 import { readFile, writeFile, assertNotDefaultBranch } from "../../github/editor_tool_functions.js";
 import { validateByExtension } from "../../github/editor_validate.js";
 import { saveCheckpoint, loadCheckpoint } from "./editor_checkpoint.js";
