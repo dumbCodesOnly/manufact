@@ -379,6 +379,10 @@ export async function runEditorAgent({ owner, repo, branch, task, max_steps = ED
     effectiveProvider = checkpoint.provider || provider;
     repeatCounts = new Map(Object.entries(checkpoint.repeatCounts || {}));
     consecutiveAllRepeatSteps = checkpoint.consecutiveAllRepeatSteps || 0;
+    // Checkpoints saved before this field existed won't have it -- default
+    // to false (normal tool-use resumes as before), same defensive pattern
+    // as every other field restored here.
+    pendingVerification = checkpoint.pendingVerification || false;
   } else if (resume_run_id) {
     // Same "fail loudly and distinctly" reasoning as designer_delegate.js --
     // this loop has no task-optional fallback path either, so there's no
