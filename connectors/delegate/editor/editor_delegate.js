@@ -116,37 +116,65 @@ function isTransientGeminiError(err) {
 // facts; bai-specific text-mimicking-a-function-call) neither observed nor
 // relevant to this incident. See this file's import comment for the same
 // scoping note.
-function buildEditorVerificationPrompt({ answer, contents, writtenFiles }) {
+function buildEditorVerificationPrompt({ answer, contents, writtenFiles, toolsAvailable }) {
   const mechanicalClaims = extractMechanicalClaims(answer);
   return findUnverifiedClaims(mechanicalClaims, contents).then((unverifiedClaims) => {
     const writeLogLine = writtenFiles.length
       ? `This run has written to the following file(s) so far: ${writtenFiles.join(", ")}.`
       : `This run has NOT written to any file yet -- writtenFiles is empty.`;
+    const actionOnMismatch = toolsAvailable
+      ? `either call write_file now to actually make it (you still have tool access this turn), or rewrite your ` +
+        `final answer to say plainly it was not completed and why, instead of reporting it as done.`
+      : `you do NOT have tool access this turn -- you cannot make that change now. Rewrite your final answer to ` +
+        `say plainly that the work described was not actually completed (and why), instead of reporting it as done.`;
     const writeLogNote =
       `[WRITE LOG CHECK] ${writeLogLine} If your answer above describes specific code changes (a function added, ` +
       `a handler wired up, a file refactored, a value updated) as already done, every such claim must correspond ` +
       `to an actual write_file call already reflected in the write log above -- not a plan, not what you intended ` +
       `to do, not what a read_file call showed could be done. If you described a change whose file is not in that ` +
-      `list, that change has NOT been made: either call write_file now to actually make it (you still have tool ` +
-      `access this turn), or rewrite your final answer to say plainly it was not completed and why, instead of ` +
-      `reporting it as done.`;
+      `list, that change has NOT been made: ${actionOnMismatch}`;
+    const claimAction = toolsAvailable
+      ? `re-read the specific file it's claimed to come from and confirm it exact-matches what's actually there ` +
+        `(or actually write it, if it was meant to be a change you made), THEN either keep the claim only if you ` +
+        `can now back it with a fresh, real tool result, or correct it.`
+      : `you do NOT have tool access this turn to re-check or write it -- correct your answer to not assert this ` +
+        `claim as fact unless it is already backed by a tool result visible above.`;
     const claimNote = unverifiedClaims.length
       ? `\n\n[SPECIFIC ITEMS TO CHECK] The following identifier(s)/snippet(s) in your draft answer do not appear ` +
         `verbatim in any tool result (read_file/write_file/validate output) gathered so far this run: ` +
-        `${unverifiedClaims.map((c) => `"${c}"`).join(", ")}. For EACH one: re-read the specific file it's claimed ` +
-        `to come from and confirm it exact-matches what's actually there (or actually write it, if it was meant to ` +
-        `be a change you made), THEN either keep the claim only if you can now back it with a fresh, real tool ` +
-        `result, or correct it. Do not restate any of these unchanged based on memory or on the fact that you ` +
-        `already wrote it once.`
+        `${unverifiedClaims.map((c) => `"${c}"`).join(", ")}. For EACH one: ${claimAction} Do not restate any of ` +
+        `these unchanged based on memory or on the fact that you already wrote it once.`
       : "";
+    const toolsLine = toolsAvailable
+      ? `You have tool access again this turn.`
+      : `You do NOT have tool access this turn -- no further function calls are possible, only a corrected ` +
+        `plain-text answer.`;
     return (
       `[SYSTEM NOTE -- verification pass] Before your answer above is treated as final, check it against the ` +
-      `write log and tool results already produced in this run -- not your own summary of them. You have tool ` +
-      `access again this turn. Once you are done checking, respond with the corrected final answer (or the same ` +
-      `answer, if it already holds up under this check) as plain text with no further function calls.\n\n` +
+      `write log and tool results already produced in this run -- not your own summary of them. ${toolsLine} ` +
+      `Once you are done checking, respond with the corrected final answer (or the same answer, if it already ` +
+      `holds up under this check) as plain text with no further function calls.\n\n` +
       writeLogNote + claimNote
     );
   });
+}
+
+// Cheap heuristic for "does this answer claim completed work", used to (a)
+// decide whether the no-tools fallback verification path below is worth
+// running at all, and (b) flag a final answer that still claims completion
+// with zero writes after verification has already run (or couldn't run).
+// Deliberately conservative -- keyword substring match plus a negation
+// check -- since false negatives here just mean a claim goes unflagged
+// (same as before this fix), while false positives would incorrectly flag
+// honest "nothing needed to change" answers.
+const COMPLETION_KEYWORDS = [
+  "implement", "added", "fixed", "wrote", "written", "created", "refactored",
+  "updated", "wired up", "completed", "done",
+];
+const COMPLETION_NEGATION_RE = /\b(not|n't|no changes|nothing was|couldn't|unable to|failed to|wasn't|weren't)\b/i;
+function looksLikeCompletionClaim(answer) {
+  const lower = answer.toLowerCase();
+  return COMPLETION_KEYWORDS.some((k) => lower.includes(k)) && !COMPLETION_NEGATION_RE.test(lower);
 }
 
 // buildSystemPreamble's actual text now lives in ../shared/preamble.js as
