@@ -83,6 +83,72 @@ function isTransientGeminiError(err) {
   return err?.status === 429 || err?.status === 503 || err?.transient === true;
 }
 
+// ---------------------------------------------------------------------------
+// Writes-vs-claim guard (fix for the 2026-09-06/07 raffle-app Stars-payment
+// incident: a run served entirely by the fallback model "gemini-3.5-flash-lite"
+// took 9 read_file steps, wrote NOTHING, then produced a confident, detailed
+// completion report -- specific function names, specific files claimed
+// updated -- none of which existed in the actual diff. Confirmed via
+// diff_files against main: zero differences. Root cause: this loop's
+// completion path used to trust the model's own final text unconditionally,
+// with zero cross-check against `writtenFiles`, the exact ground-truth list
+// already sitting in scope at that point).
+//
+// Modeled directly on agent_delegate.js's own verification pass (see that
+// file's VERIFICATION_PROMPT/pendingVerification for the general pattern
+// and the live-testing evidence behind it), but narrower and pointed at
+// this loop's own failure mode rather than ported wholesale:
+//   - agent_delegate.js verifies claims about RETRIEVED DATA (does a quoted
+//     fact/identifier appear verbatim in tool output already gathered).
+//   - This guard verifies claims about ACTIONS TAKEN (does a claimed write
+//     appear in writtenFiles, the run's own append-only write log) --
+//     a check agent_delegate.js has no reason to need, since it never
+//     writes anything.
+// Both flow into the SAME single-fire pendingVerification mechanism below
+// (one extra round, tools re-enabled, then whatever comes back is final --
+// see agent_delegate.js's own comments for why a no-tools self-check was
+// tried first and found insufficient: a model asked to double-check purely
+// from memory just re-asserts its own mistake with equal confidence).
+//
+// Deliberately does NOT also port extractConditionalClaims/
+// lineIsVerbatimInToolResults/detectToolCallLeakage -- those target
+// different failure shapes (a fabricated relationship between two real
+// facts; bai-specific text-mimicking-a-function-call) neither observed nor
+// relevant to this incident. See this file's import comment for the same
+// scoping note.
+function buildEditorVerificationPrompt({ answer, contents, writtenFiles }) {
+  const mechanicalClaims = extractMechanicalClaims(answer);
+  return findUnverifiedClaims(mechanicalClaims, contents).then((unverifiedClaims) => {
+    const writeLogLine = writtenFiles.length
+      ? `This run has written to the following file(s) so far: ${writtenFiles.join(", ")}.`
+      : `This run has NOT written to any file yet -- writtenFiles is empty.`;
+    const writeLogNote =
+      `[WRITE LOG CHECK] ${writeLogLine} If your answer above describes specific code changes (a function added, ` +
+      `a handler wired up, a file refactored, a value updated) as already done, every such claim must correspond ` +
+      `to an actual write_file call already reflected in the write log above -- not a plan, not what you intended ` +
+      `to do, not what a read_file call showed could be done. If you described a change whose file is not in that ` +
+      `list, that change has NOT been made: either call write_file now to actually make it (you still have tool ` +
+      `access this turn), or rewrite your final answer to say plainly it was not completed and why, instead of ` +
+      `reporting it as done.`;
+    const claimNote = unverifiedClaims.length
+      ? `\n\n[SPECIFIC ITEMS TO CHECK] The following identifier(s)/snippet(s) in your draft answer do not appear ` +
+        `verbatim in any tool result (read_file/write_file/validate output) gathered so far this run: ` +
+        `${unverifiedClaims.map((c) => `"${c}"`).join(", ")}. For EACH one: re-read the specific file it's claimed ` +
+        `to come from and confirm it exact-matches what's actually there (or actually write it, if it was meant to ` +
+        `be a change you made), THEN either keep the claim only if you can now back it with a fresh, real tool ` +
+        `result, or correct it. Do not restate any of these unchanged based on memory or on the fact that you ` +
+        `already wrote it once.`
+      : "";
+    return (
+      `[SYSTEM NOTE -- verification pass] Before your answer above is treated as final, check it against the ` +
+      `write log and tool results already produced in this run -- not your own summary of them. You have tool ` +
+      `access again this turn. Once you are done checking, respond with the corrected final answer (or the same ` +
+      `answer, if it already holds up under this check) as plain text with no further function calls.\n\n` +
+      writeLogNote + claimNote
+    );
+  });
+}
+
 // buildSystemPreamble's actual text now lives in ../shared/preamble.js as
 // buildEditorPreamble({ owner, repo, branch }) -- see that file's header
 // for why this was relocated (not unified with designer's own preamble)
