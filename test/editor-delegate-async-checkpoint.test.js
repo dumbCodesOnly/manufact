@@ -176,6 +176,11 @@ describe("editor_delegate.js — single-step resume chaining (async delegate_edi
 
   it("a completed run's checkpoint is still loadable (status: done) immediately after runEditorAgent returns -- no test relies on the old deleteCheckpoint behavior", async () => {
     mockProviderChat.mockResolvedValueOnce(textCandidate("finished"));
+    // Writes-vs-claim verification pass: a fresh synchronous run (not
+    // singleStep) has tool access and step budget left on its first draft
+    // answer, so it gets one corrective round before being trusted -- see
+    // editor_delegate.js's buildEditorVerificationPrompt/pendingVerification.
+    mockProviderChat.mockResolvedValueOnce(textCandidate("finished"));
     const result = await runEditorAgent({ owner: OWNER, repo: REPO, branch: BRANCH, task: "fresh synchronous run" });
     expect(result.answer).toBe("finished");
 
