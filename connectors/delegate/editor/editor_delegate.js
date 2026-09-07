@@ -320,6 +320,18 @@ export async function runEditorAgent({ owner, repo, branch, task, max_steps = ED
   let repeatCounts = new Map();
   let resultCache = new Map();
   let consecutiveAllRepeatSteps = 0;
+  // Tracks whether ANY step this run was served by a Gemini fallback model
+  // (see connectors/gemini/client.js's cascade -- a 429/503/network error on
+  // the primary model/key silently drops to GEMINI_FALLBACK_MODELS, e.g.
+  // "gemini-3.5-flash-lite"). formatCascadeLogLine already logs this into
+  // `transcript` per-step, but that's a side log a caller has to know to
+  // read -- the incident this file's writes-vs-claim guard fixes involved
+  // EVERY step being served by a weak fallback model with the caller only
+  // discovering that fact by manually reading the transcript after the
+  // fact. Surfaced directly on the returned result below so a caller can
+  // treat "answer came from a fallback model" as a first-class signal to
+  // weigh, without needing to parse transcript strings.
+  let fallbackModelUsed = null;
   // Writes-vs-claim verification pass (see buildEditorVerificationPrompt's
   // header comment above for the incident/rationale) -- true once the model
   // has produced a draft final answer and been sent back for one no-fresh-
