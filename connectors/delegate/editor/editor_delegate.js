@@ -563,6 +563,28 @@ export async function runEditorAgent({ owner, repo, branch, task, max_steps = ED
           failed: true,
         };
       }
+      // Writes-vs-claim verification pass -- see buildEditorVerificationPrompt's
+      // header comment for the incident this exists to fix. Fires at most
+      // once per run (guarded by !pendingVerification): a draft answer that
+      // arrives with tool access still available (not already a forced
+      // no-tools turn) and step budget left gets sent back for one
+      // corrective round BEFORE it's trusted, checking it against
+      // writtenFiles and any tool-result text already gathered. Tools stay
+      // ENABLED this turn (unlike isFinalStep/stuckLoopForce, which
+      // deliberately withhold them to force a stop) -- same reasoning as
+      // agent_delegate.js's own verification pass: a model asked to
+      // self-check purely from memory just re-asserts its own mistake with
+      // equal confidence, but tool access lets it actually re-read the file
+      // or make the write it claimed, rather than guess.
+      if (!withholdTools && !pendingVerification && step < cappedSteps) {
+        const verificationPrompt = await buildEditorVerificationPrompt({ answer, contents, writtenFiles });
+        contents.push({ role: "model", parts });
+        contents.push({ role: "user", parts: [{ text: verificationPrompt }] });
+        pendingVerification = true;
+        await saveState(step);
+        continue;
+      }
+
       // Persist a "done" checkpoint (status + finalAnswer) here instead of
       // deleting it -- a resume_run_id caller polling a background/worker-
       // driven run needs SOMETHING to read once the run finishes, and
@@ -588,10 +610,12 @@ export async function runEditorAgent({ owner, repo, branch, task, max_steps = ED
         consecutiveAllRepeatSteps,
         overallMaxSteps: effectiveOverallMaxSteps,
         provider: effectiveProvider,
+        pendingVerification,
+        fallbackModelUsed,
         status: "done",
         finalAnswer: answer,
       });
-      return { answer, steps: step, transcript, runId, task: effectiveTask, writtenFiles };
+      return { answer, steps: step, transcript, runId, task: effectiveTask, writtenFiles, fallbackModelUsed, failed: false };
     }
 
     contents.push({ role: "model", parts });
